@@ -13,6 +13,7 @@ import {
   Lock,
   LogOut,
   Menu,
+  MessageSquare,
   PanelLeftClose,
   PanelLeftOpen,
   Play,
@@ -21,11 +22,11 @@ import {
   ShieldAlert,
   X,
 } from 'lucide-react';
-import { apiFetch, getDeviceFingerprint } from '../../lib/api.ts';
+import { apiFetch, getDeviceFingerprint, withAuthTokenUrl } from '../../lib/api.ts';
 import { formatBirthPlaceDate, formatGender } from '../../lib/format.ts';
 import { generateStudentRaporPDF } from '../../lib/pdf.ts';
 import { StudentAvatar } from '../StudentAvatar.tsx';
-import type { ActiveExamPayload, AuthUser, InstitutionBranding, StudentExamSummary } from '../../types/cbt.ts';
+import type { ActiveExamPayload, AuthUser, InstitutionBranding, StudentExamSummary, StudentMessageItem } from '../../types/cbt.ts';
 
 interface StudentDashboardProps {
   user: AuthUser;
@@ -55,13 +56,18 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
   const [cameraConsent, setCameraConsent] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
   const [selectedResultExam, setSelectedResultExam] = useState<StudentExamSummary | null>(null);
+  const [messages, setMessages] = useState<StudentMessageItem[]>([]);
 
   const loadDashboard = async () => {
     setLoading(true);
     setError(null);
     try {
-      const res = await apiFetch<{ exams: StudentExamSummary[] }>('/api/student/dashboard');
-      setExams(res.exams);
+      const [dashRes, msgRes] = await Promise.all([
+        apiFetch<{ exams: StudentExamSummary[] }>('/api/student/dashboard'),
+        apiFetch<{ messages: StudentMessageItem[] }>('/api/student/messages').catch(() => ({ messages: [] })),
+      ]);
+      setExams(dashRes.exams);
+      setMessages(msgRes.messages);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Gagal memuat daftar ujian.');
     } finally {
@@ -72,6 +78,42 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
   useEffect(() => {
     loadDashboard();
   }, []);
+
+  // Real-time WebSocket listener for incoming messages / kesan and session reset notifications
+  useEffect(() => {
+    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(withAuthTokenUrl(`${proto}//${window.location.host}/ws`));
+
+    ws.onmessage = (evt) => {
+      try {
+        const msg = JSON.parse(evt.data);
+        if (msg.type === 'student:message' && msg.message) {
+          const item = msg.message as StudentMessageItem;
+          setMessages((prev) => (prev.some((m) => m.id === item.id) ? prev : [item, ...prev]));
+        } else if (msg.type === 'session:reset_exam') {
+          loadDashboard();
+        }
+      } catch {
+        // ignore parse error
+      }
+    };
+
+    return () => {
+      ws.close();
+    };
+  }, []);
+
+  const markMessageRead = async (messageId: string) => {
+    try {
+      await apiFetch(`/api/student/messages/${messageId}/read`, { method: 'POST' });
+      const nowIso = new Date().toISOString();
+      setMessages((prev) =>
+        prev.map((m) => (messageId === 'all' || m.id === messageId ? { ...m, is_read: 1, read_at: m.read_at || nowIso } : m))
+      );
+    } catch {
+      // ignore read status sync error
+    }
+  };
 
   // Auto-hide drawer when Escape is pressed or when rotating/resizing between HP/Tablet and Desktop
   useEffect(() => {
@@ -438,6 +480,77 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
               </div>
             </div>
           </section>
+
+          {messages.length > 0 && (
+            <section className="bg-white border border-slate-200 shadow-[0_1px_2px_rgba(15,23,42,0.04)] rounded-xl sm:rounded-2xl overflow-hidden">
+              <div className="px-4 sm:px-6 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <MessageSquare className="w-4 h-4 text-[#0e539a] shrink-0" />
+                  <h2 className="text-xs sm:text-sm font-display font-bold text-slate-900 truncate">
+                    Pesan &amp; Catatan dari Panitia / Pengawas
+                  </h2>
+                </div>
+                {messages.some((m) => !m.is_read) && (
+                  <button
+                    type="button"
+                    onClick={() => markMessageRead('all')}
+                    className="text-xs font-semibold text-[#0e539a] hover:underline whitespace-nowrap shrink-0"
+                  >
+                    Tandai Semua Dibaca ({messages.filter((m) => !m.is_read).length})
+                  </button>
+                )}
+              </div>
+              <div className="divide-y divide-slate-100 max-h-64 overflow-y-auto">
+                {messages.slice(0, 6).map((m) => {
+                  const categoryLabel =
+                    m.category === 'peringatan'
+                      ? 'Peringatan'
+                      : m.category === 'instruksi'
+                      ? 'Instruksi Teknis'
+                      : m.category === 'kesan'
+                      ? 'Kesan & Catatan'
+                      : 'Pesan';
+                  return (
+                    <div
+                      key={m.id}
+                      className={`px-4 sm:px-6 py-3.5 flex flex-col sm:flex-row sm:items-start justify-between gap-2 ${
+                        !m.is_read ? 'bg-sky-50/60' : 'bg-white'
+                      }`}
+                    >
+                      <div className="min-w-0 space-y-1">
+                        <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-slate-500">
+                          <span className={`font-semibold ${m.category === 'peringatan' ? 'text-amber-800' : 'text-[#0e539a]'}`}>
+                            {categoryLabel}
+                          </span>
+                          <span aria-hidden="true">·</span>
+                          <span className="font-medium text-slate-700">{m.sender_name}</span>
+                          <span aria-hidden="true">·</span>
+                          <span className="tabular-nums">{new Date(m.created_at).toLocaleString('id-ID')}</span>
+                          {!m.is_read && (
+                            <>
+                              <span aria-hidden="true">·</span>
+                              <span className="font-semibold text-[#0e539a]">Baru</span>
+                            </>
+                          )}
+                        </div>
+                        {m.title && <p className="text-xs sm:text-sm font-bold text-slate-900">{m.title}</p>}
+                        <p className="text-xs sm:text-sm text-slate-700 leading-relaxed whitespace-pre-line">{m.message}</p>
+                      </div>
+                      {!m.is_read && (
+                        <button
+                          type="button"
+                          onClick={() => markMessageRead(m.id)}
+                          className="self-start min-h-[34px] px-3 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-700 whitespace-nowrap shrink-0"
+                        >
+                          Tandai Dibaca
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+          )}
 
           {error && (
             <div className="p-4 rounded-xl bg-red-50 border border-red-200 text-red-800 text-sm">
@@ -810,7 +923,9 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
                   </button>
                 </div>
                 <p className="text-[11px] text-slate-500">
-                  Masukkan PIN / Password Ujian / Token yang diberikan oleh pengawas ruang atau panitia ujian.
+                  {confirmExam.usesExamToken
+                    ? 'Ujian ini menggunakan Token Khusus. Masukkan token ujian yang dibagikan oleh pengawas ruang.'
+                    : 'Masukkan PIN / Password Ujian peserta yang diberikan oleh pengawas ruang atau panitia ujian.'}
                 </p>
               </div>
 

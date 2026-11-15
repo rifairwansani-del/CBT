@@ -6,8 +6,14 @@ import {
   Edit3,
   FileArchive,
   FileSpreadsheet,
+  KeyRound,
+  Lock,
+  LockOpen,
+  MessageSquare,
   Plus,
+  RotateCcw,
   Search,
+  Send,
   Trash2,
   Upload,
 } from 'lucide-react';
@@ -164,6 +170,21 @@ export const StudentsAndPhotosPanel: React.FC<{ isAdmin: boolean }> = ({ isAdmin
   const [classImportPreview, setClassImportPreview] = useState<GenericImportPreview | null>(null);
   const [subjectImportPreview, setSubjectImportPreview] = useState<GenericImportPreview | null>(null);
   const [bulkPhotoPreview, setBulkPhotoPreview] = useState<BulkPhotoPreview | null>(null);
+  const [showPinConfigModal, setShowPinConfigModal] = useState(false);
+  const [pinConfigScope, setPinConfigScope] = useState<'all' | 'class' | 'selected'>('all');
+  const [pinConfigClassId, setPinConfigClassId] = useState('');
+  const [pinConfigStudentIds, setPinConfigStudentIds] = useState<string[]>([]);
+  const [pinConfigSearch, setPinConfigSearch] = useState('');
+  const [pinConfigMode, setPinConfigMode] = useState<'custom' | 'random'>('custom');
+  const [pinConfigValue, setPinConfigValue] = useState('123456');
+  const [showMessageModal, setShowMessageModal] = useState(false);
+  const [msgScope, setMsgScope] = useState<'all' | 'class' | 'selected'>('all');
+  const [msgClassId, setMsgClassId] = useState('');
+  const [msgStudentIds, setMsgStudentIds] = useState<string[]>([]);
+  const [msgSearch, setMsgSearch] = useState('');
+  const [msgCategory, setMsgCategory] = useState<'pesan' | 'peringatan' | 'instruksi' | 'kesan'>('pesan');
+  const [msgTitle, setMsgTitle] = useState('');
+  const [msgBody, setMsgBody] = useState('');
   const [busy, setBusy] = useState(false);
   const [confirmState, setConfirmState] = useState<{
     title: string;
@@ -283,18 +304,6 @@ export const StudentsAndPhotosPanel: React.FC<{ isAdmin: boolean }> = ({ isAdmin
     }
   };
 
-  const handleToggleActive = async (stu: StudentRow) => {
-    try {
-      await apiFetch(`/api/admin/students/${stu.id}`, {
-        method: 'PUT',
-        body: JSON.stringify({ isActive: !stu.is_active }),
-      });
-      await loadAll();
-    } catch (err) {
-      setBanner({ type: 'err', text: err instanceof Error ? err.message : 'Gagal mengubah status.' });
-    }
-  };
-
   const handleResetPin = async (stu: StudentRow) => {
     const nextPin = String(Math.floor(100000 + Math.random() * 900000));
     try {
@@ -306,6 +315,123 @@ export const StudentsAndPhotosPanel: React.FC<{ isAdmin: boolean }> = ({ isAdmin
       await loadAll();
     } catch (err) {
       setBanner({ type: 'err', text: err instanceof Error ? err.message : 'Gagal mereset PIN.' });
+    }
+  };
+
+  const openPinConfigModal = (defaultScope: 'all' | 'class' | 'selected' = 'all') => {
+    setPinConfigScope(defaultScope);
+    setPinConfigClassId(classFilter !== 'all' ? classFilter : classes[0]?.id || '');
+    setPinConfigStudentIds(selectedStudentIds.length > 0 ? [...selectedStudentIds] : []);
+    setPinConfigSearch('');
+    setPinConfigMode('custom');
+    setPinConfigValue('123456');
+    setShowPinConfigModal(true);
+  };
+
+  const generateRandomTokenString = () => {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    let out = '';
+    for (let i = 0; i < 6; i++) out += chars[Math.floor(Math.random() * chars.length)];
+    return out;
+  };
+
+  const handleSaveBulkPinConfig = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setBanner(null);
+    try {
+      const res = await apiFetch<{ updatedCount: number; mode: string }>('/api/admin/students/bulk-pin', {
+        method: 'POST',
+        body: JSON.stringify({
+          scope: pinConfigScope,
+          classId: pinConfigScope === 'class' ? pinConfigClassId : undefined,
+          studentIds: pinConfigScope === 'selected' ? pinConfigStudentIds : undefined,
+          mode: pinConfigMode,
+          pinValue: pinConfigMode === 'custom' ? pinConfigValue.trim() : undefined,
+        }),
+      });
+      setShowPinConfigModal(false);
+      setBanner({
+        type: 'ok',
+        text:
+          res.mode === 'custom'
+            ? `PIN / Token ujian "${pinConfigValue.trim()}" berhasil diterapkan untuk ${res.updatedCount} siswa.`
+            : `PIN acak baru berhasil dibuat untuk ${res.updatedCount} siswa.`,
+      });
+      await loadAll();
+    } catch (err) {
+      setBanner({ type: 'err', text: err instanceof Error ? err.message : 'Gagal mengatur PIN / Token siswa.' });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleBulkStudentAccountAction = async (
+    action: 'lock_account' | 'unlock_account' | 'reset_access',
+    targetIds: string[]
+  ) => {
+    if (targetIds.length === 0) return;
+    setBusy(true);
+    setBanner(null);
+    try {
+      const res = await apiFetch<{ updatedCount: number }>('/api/admin/students/bulk-action', {
+        method: 'POST',
+        body: JSON.stringify({
+          action,
+          scope: 'selected',
+          studentIds: targetIds,
+        }),
+      });
+      const label =
+        action === 'lock_account'
+          ? `${res.updatedCount} akun siswa berhasil dikunci (dinonaktifkan).`
+          : action === 'unlock_account'
+          ? `${res.updatedCount} akun siswa berhasil dibuka kuncinya (diaktifkan & reset blokir login).`
+          : `Akses login & batas salah PIN untuk ${res.updatedCount} siswa berhasil direset.`;
+      setBanner({ type: 'ok', text: label });
+      await loadAll();
+    } catch (err) {
+      setBanner({ type: 'err', text: err instanceof Error ? err.message : 'Gagal memproses aksi akun siswa.' });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const openSendMessageModal = (defaultScope: 'all' | 'class' | 'selected' = 'all', presetStudentIds?: string[]) => {
+    const resolvedScope = !isAdmin && defaultScope === 'all' ? 'class' : defaultScope;
+    setMsgScope(resolvedScope);
+    setMsgClassId(classFilter !== 'all' ? classFilter : classes[0]?.id || '');
+    setMsgStudentIds(presetStudentIds ? [...presetStudentIds] : [...selectedStudentIds]);
+    setMsgSearch('');
+    setMsgCategory('pesan');
+    setMsgTitle('');
+    setMsgBody('');
+    setShowMessageModal(true);
+  };
+
+  const handleSendStudentMessage = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!msgBody.trim()) return;
+    setBusy(true);
+    setBanner(null);
+    try {
+      const res = await apiFetch<{ sentCount: number }>('/api/admin/messages/send', {
+        method: 'POST',
+        body: JSON.stringify({
+          scope: msgScope,
+          classId: msgScope === 'class' ? msgClassId : undefined,
+          studentIds: msgScope === 'selected' ? msgStudentIds : undefined,
+          category: msgCategory,
+          title: msgTitle.trim() || undefined,
+          message: msgBody.trim(),
+        }),
+      });
+      setShowMessageModal(false);
+      setBanner({ type: 'ok', text: `Pesan / kesan berhasil dikirim ke ${res.sentCount} siswa.` });
+    } catch (err) {
+      setBanner({ type: 'err', text: err instanceof Error ? err.message : 'Gagal mengirim pesan ke siswa.' });
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -580,37 +706,55 @@ export const StudentsAndPhotosPanel: React.FC<{ isAdmin: boolean }> = ({ isAdmin
               </select>
             </div>
 
-            {isAdmin && (
-              <div className="flex flex-wrap items-center gap-2">
-                <a
-                  href={withAuthTokenUrl('/api/admin/templates/students.xlsx')}
-                  className="min-h-[40px] px-3 py-2 rounded-xl border border-slate-200 hover:bg-slate-50 text-xs font-semibold text-slate-700 flex items-center gap-1.5"
-                >
-                  <Download className="w-4 h-4" />
-                  <span>Template Excel</span>
-                </a>
-                <label className="min-h-[40px] px-3 py-2 rounded-xl border border-slate-200 hover:bg-slate-50 text-xs font-semibold text-slate-700 flex items-center gap-1.5 cursor-pointer">
-                  <FileSpreadsheet className="w-4 h-4" />
-                  <span>Impor Excel</span>
-                  <input type="file" accept=".xlsx,.xls" onChange={handleStudentExcelUpload} className="hidden" />
-                </label>
-                <a
-                  href={studentExportUrl}
-                  className="min-h-[40px] px-3 py-2 rounded-xl border border-slate-200 hover:bg-slate-50 text-xs font-semibold text-slate-700 flex items-center gap-1.5"
-                >
-                  <Download className="w-4 h-4" />
-                  <span>{selectedStudentIds.length > 0 ? `Ekspor Terpilih (${selectedStudentIds.length})` : 'Ekspor Semua'}</span>
-                </a>
-                <button
-                  type="button"
-                  onClick={() => setShowAddStudent(true)}
-                  className="min-h-[40px] px-4 py-2 rounded-xl bg-blue-900 hover:bg-blue-800 text-white text-xs font-semibold flex items-center gap-1.5"
-                >
-                  <Plus className="w-4 h-4" />
-                  <span>Tambah Siswa</span>
-                </button>
-              </div>
-            )}
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => openSendMessageModal(selectedStudentIds.length > 0 ? 'selected' : isAdmin ? 'all' : 'class')}
+                className="min-h-[40px] px-3 py-2 rounded-xl border border-slate-200 hover:bg-slate-50 text-xs font-semibold text-[#0e539a] flex items-center gap-1.5"
+              >
+                <MessageSquare className="w-4 h-4" />
+                <span>Kirim Pesan / Kesan</span>
+              </button>
+              {isAdmin && (
+                <>
+                  <a
+                    href={withAuthTokenUrl('/api/admin/templates/students.xlsx')}
+                    className="min-h-[40px] px-3 py-2 rounded-xl border border-slate-200 hover:bg-slate-50 text-xs font-semibold text-slate-700 flex items-center gap-1.5"
+                  >
+                    <Download className="w-4 h-4" />
+                    <span>Template Excel</span>
+                  </a>
+                  <label className="min-h-[40px] px-3 py-2 rounded-xl border border-slate-200 hover:bg-slate-50 text-xs font-semibold text-slate-700 flex items-center gap-1.5 cursor-pointer">
+                    <FileSpreadsheet className="w-4 h-4" />
+                    <span>Impor Excel</span>
+                    <input type="file" accept=".xlsx,.xls" onChange={handleStudentExcelUpload} className="hidden" />
+                  </label>
+                  <a
+                    href={studentExportUrl}
+                    className="min-h-[40px] px-3 py-2 rounded-xl border border-slate-200 hover:bg-slate-50 text-xs font-semibold text-slate-700 flex items-center gap-1.5"
+                  >
+                    <Download className="w-4 h-4" />
+                    <span>{selectedStudentIds.length > 0 ? `Ekspor Terpilih (${selectedStudentIds.length})` : 'Ekspor Semua'}</span>
+                  </a>
+                  <button
+                    type="button"
+                    onClick={() => openPinConfigModal(selectedStudentIds.length > 0 ? 'selected' : 'all')}
+                    className="min-h-[40px] px-3 py-2 rounded-xl border border-slate-200 hover:bg-slate-50 text-xs font-semibold text-slate-700 flex items-center gap-1.5"
+                  >
+                    <KeyRound className="w-4 h-4 text-[#0e539a]" />
+                    <span>Atur PIN / Token</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowAddStudent(true)}
+                    className="min-h-[40px] px-4 py-2 rounded-xl bg-blue-900 hover:bg-blue-800 text-white text-xs font-semibold flex items-center gap-1.5"
+                  >
+                    <Plus className="w-4 h-4" />
+                    <span>Tambah Siswa</span>
+                  </button>
+                </>
+              )}
+            </div>
           </div>
 
           {/* Selection Action Bar */}
@@ -620,12 +764,55 @@ export const StudentsAndPhotosPanel: React.FC<{ isAdmin: boolean }> = ({ isAdmin
                 {selectedStudentIds.length} siswa dipilih
               </span>
               <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => handleBulkStudentAccountAction('lock_account', selectedStudentIds)}
+                  className="min-h-[38px] px-3 py-1.5 rounded-xl bg-white border border-amber-300 hover:bg-amber-50 text-xs font-semibold text-amber-900 inline-flex items-center gap-1.5"
+                >
+                  <Lock className="w-3.5 h-3.5" />
+                  <span>Kunci Akun</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => handleBulkStudentAccountAction('unlock_account', selectedStudentIds)}
+                  className="min-h-[38px] px-3 py-1.5 rounded-xl bg-white border border-blue-200 hover:bg-blue-100/50 text-xs font-semibold text-blue-900 inline-flex items-center gap-1.5"
+                >
+                  <LockOpen className="w-3.5 h-3.5" />
+                  <span>Buka Kunci</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => handleBulkStudentAccountAction('reset_access', selectedStudentIds)}
+                  className="min-h-[38px] px-3 py-1.5 rounded-xl bg-white border border-blue-200 hover:bg-blue-100/50 text-xs font-semibold text-slate-800 inline-flex items-center gap-1.5"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  <span>Reset Akses</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => openSendMessageModal('selected', selectedStudentIds)}
+                  className="min-h-[38px] px-3 py-1.5 rounded-xl bg-[#0e539a] hover:bg-[#0b437e] text-white text-xs font-semibold inline-flex items-center gap-1.5"
+                >
+                  <MessageSquare className="w-3.5 h-3.5" />
+                  <span>Kirim Pesan</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => openPinConfigModal('selected')}
+                  className="min-h-[38px] px-3 py-1.5 rounded-xl bg-white border border-blue-200 hover:bg-blue-100/50 text-xs font-semibold text-blue-900 inline-flex items-center gap-1.5"
+                >
+                  <KeyRound className="w-3.5 h-3.5" />
+                  <span>Atur PIN / Token</span>
+                </button>
                 <a
                   href={studentExportUrl}
                   className="min-h-[38px] px-3 py-1.5 rounded-xl bg-white border border-blue-200 hover:bg-blue-100/50 text-xs font-semibold text-blue-900 inline-flex items-center gap-1.5"
                 >
                   <Download className="w-3.5 h-3.5" />
-                  <span>Ekspor Terpilih (.xlsx)</span>
+                  <span>Ekspor (.xlsx)</span>
                 </a>
                 <button
                   type="button"
@@ -803,10 +990,19 @@ export const StudentsAndPhotosPanel: React.FC<{ isAdmin: boolean }> = ({ isAdmin
                           </button>
                           <button
                             type="button"
-                            onClick={() => handleToggleActive(stu)}
-                            className="min-h-[40px] px-3 rounded-xl border border-slate-200 hover:bg-slate-50 text-xs font-semibold text-slate-700"
+                            onClick={() => handleBulkStudentAccountAction(stu.is_active ? 'lock_account' : 'unlock_account', [stu.id])}
+                            className="min-h-[40px] px-3 rounded-xl border border-slate-200 hover:bg-slate-50 text-xs font-semibold text-slate-700 inline-flex items-center justify-center gap-1.5"
                           >
-                            {stu.is_active ? 'Nonaktifkan' : 'Aktifkan'}
+                            {stu.is_active ? <Lock className="w-3.5 h-3.5 text-amber-700" /> : <LockOpen className="w-3.5 h-3.5 text-blue-900" />}
+                            <span>{stu.is_active ? 'Kunci Akun' : 'Buka Kunci'}</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => openSendMessageModal('selected', [stu.id])}
+                            className="min-h-[40px] px-3 rounded-xl border border-slate-200 hover:bg-slate-50 text-xs font-semibold text-[#0e539a] inline-flex items-center justify-center gap-1.5"
+                          >
+                            <MessageSquare className="w-3.5 h-3.5" />
+                            <span>Pesan</span>
                           </button>
                           <button
                             type="button"
@@ -822,7 +1018,7 @@ export const StudentsAndPhotosPanel: React.FC<{ isAdmin: boolean }> = ({ isAdmin
                                 },
                               })
                             }
-                            className="min-h-[40px] px-3 rounded-xl border border-red-200 hover:bg-red-50 text-xs font-semibold text-red-700 inline-flex items-center justify-center gap-1.5"
+                            className="col-span-2 min-h-[40px] px-3 rounded-xl border border-red-200 hover:bg-red-50 text-xs font-semibold text-red-700 inline-flex items-center justify-center gap-1.5"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
                             <span>Hapus</span>
@@ -949,10 +1145,19 @@ export const StudentsAndPhotosPanel: React.FC<{ isAdmin: boolean }> = ({ isAdmin
                               </button>
                               <button
                                 type="button"
-                                onClick={() => handleToggleActive(stu)}
-                                className="px-2.5 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-100 text-xs font-medium text-slate-700"
+                                onClick={() => handleBulkStudentAccountAction(stu.is_active ? 'lock_account' : 'unlock_account', [stu.id])}
+                                className="px-2.5 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-100 text-xs font-medium text-slate-700 inline-flex items-center gap-1"
                               >
-                                {stu.is_active ? 'Nonaktifkan' : 'Aktifkan'}
+                                {stu.is_active ? <Lock className="w-3.5 h-3.5 text-amber-700" /> : <LockOpen className="w-3.5 h-3.5 text-blue-900" />}
+                                <span>{stu.is_active ? 'Kunci' : 'Buka Kunci'}</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => openSendMessageModal('selected', [stu.id])}
+                                className="px-2.5 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-100 text-xs font-medium text-[#0e539a] inline-flex items-center gap-1"
+                              >
+                                <MessageSquare className="w-3.5 h-3.5" />
+                                <span>Pesan</span>
                               </button>
                               <button
                                 type="button"
@@ -1955,6 +2160,394 @@ export const StudentsAndPhotosPanel: React.FC<{ isAdmin: boolean }> = ({ isAdmin
               </button>
               <button type="submit" disabled={busy} className="min-h-[44px] px-4 py-2 rounded-xl bg-blue-900 text-white text-sm font-semibold disabled:opacity-50">
                 Simpan Perubahan
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* Bulk / Targeted PIN & Token Settings Modal */}
+      {showPinConfigModal && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4">
+          <form
+            onSubmit={handleSaveBulkPinConfig}
+            className="bg-white border border-slate-200 rounded-t-3xl sm:rounded-2xl max-w-lg w-full p-5 sm:p-6 space-y-4 max-h-[92dvh] overflow-y-auto pb-safe"
+          >
+            <div className="w-10 h-1 rounded-full bg-slate-300 mx-auto sm:hidden" />
+            <div className="flex items-center justify-between gap-2 border-b border-slate-100 pb-3">
+              <h3 className="text-lg font-display font-bold text-slate-900 flex items-center gap-2">
+                <KeyRound className="w-5 h-5 text-[#0e539a]" />
+                <span>Pengaturan PIN / Token Siswa</span>
+              </h3>
+              <button
+                type="button"
+                onClick={() => setShowPinConfigModal(false)}
+                className="min-h-[36px] px-2.5 rounded-lg text-xs font-semibold text-slate-500 hover:bg-slate-100"
+              >
+                Tutup
+              </button>
+            </div>
+
+            <div className="space-y-4 text-sm">
+              <div>
+                <p className="text-xs font-semibold text-slate-700 mb-2">Sasaran Peserta</p>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setPinConfigScope('all')}
+                    className={`min-h-[42px] px-3 py-2 rounded-xl border text-xs font-semibold text-left transition-colors ${
+                      pinConfigScope === 'all'
+                        ? 'bg-blue-50 border-[#0e539a] text-[#0e539a]'
+                        : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+                    }`}
+                  >
+                    Semua Siswa ({students.length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPinConfigScope('class')}
+                    className={`min-h-[42px] px-3 py-2 rounded-xl border text-xs font-semibold text-left transition-colors ${
+                      pinConfigScope === 'class'
+                        ? 'bg-blue-50 border-[#0e539a] text-[#0e539a]'
+                        : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+                    }`}
+                  >
+                    Kelas Tertentu
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPinConfigScope('selected')}
+                    className={`min-h-[42px] px-3 py-2 rounded-xl border text-xs font-semibold text-left transition-colors ${
+                      pinConfigScope === 'selected'
+                        ? 'bg-blue-50 border-[#0e539a] text-[#0e539a]'
+                        : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+                    }`}
+                  >
+                    Siswa Tertentu ({pinConfigStudentIds.length})
+                  </button>
+                </div>
+              </div>
+
+              {pinConfigScope === 'class' && (
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Pilih Kelas</label>
+                  <select
+                    value={pinConfigClassId}
+                    onChange={(e) => setPinConfigClassId(e.target.value)}
+                    className="w-full min-h-[44px] px-3 py-2 rounded-xl border border-slate-300 bg-white text-sm"
+                  >
+                    {classes.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name} ({c.student_count} siswa)
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              {pinConfigScope === 'selected' && (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="text-xs font-semibold text-slate-700">
+                      Pilih Siswa Tertentu ({pinConfigStudentIds.length} dipilih)
+                    </label>
+                    <div className="flex items-center gap-2 text-xs">
+                      <button
+                        type="button"
+                        onClick={() => setPinConfigStudentIds(students.map((s) => s.id))}
+                        className="text-[#0e539a] font-semibold hover:underline"
+                      >
+                        Pilih Semua
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPinConfigStudentIds([])}
+                        className="text-slate-500 font-semibold hover:underline"
+                      >
+                        Kosongkan
+                      </button>
+                    </div>
+                  </div>
+                  <input
+                    type="text"
+                    value={pinConfigSearch}
+                    onChange={(e) => setPinConfigSearch(e.target.value)}
+                    placeholder="Cari nama atau NIS siswa..."
+                    className="w-full min-h-[40px] px-3 py-1.5 rounded-xl border border-slate-300 text-xs"
+                  />
+                  <div className="max-h-44 overflow-y-auto border border-slate-200 rounded-xl divide-y divide-slate-100">
+                    {students
+                      .filter((s) => {
+                        const q = pinConfigSearch.trim().toLowerCase();
+                        return !q || s.full_name.toLowerCase().includes(q) || s.nis.toLowerCase().includes(q);
+                      })
+                      .map((s) => {
+                        const checked = pinConfigStudentIds.includes(s.id);
+                        return (
+                          <label
+                            key={s.id}
+                            className="px-3 py-2 flex items-center justify-between gap-2 text-xs cursor-pointer hover:bg-slate-50"
+                          >
+                            <span className="flex items-center gap-2 min-w-0">
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={(e) =>
+                                  setPinConfigStudentIds((prev) =>
+                                    e.target.checked ? [...prev, s.id] : prev.filter((id) => id !== s.id)
+                                  )
+                                }
+                                className="w-4 h-4 rounded border-slate-300 shrink-0"
+                              />
+                              <span className="font-medium text-slate-800 truncate">{s.full_name}</span>
+                            </span>
+                            <span className="font-mono text-[11px] text-slate-500 shrink-0 tabular-nums">
+                              {s.nis} · {s.class_name}
+                            </span>
+                          </label>
+                        );
+                      })}
+                  </div>
+                </div>
+              )}
+
+              <div>
+                <p className="text-xs font-semibold text-slate-700 mb-2">Metode PIN / Token</p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setPinConfigMode('custom')}
+                    className={`min-h-[42px] px-3 py-2 rounded-xl border text-xs font-semibold text-left transition-colors ${
+                      pinConfigMode === 'custom'
+                        ? 'bg-blue-50 border-[#0e539a] text-[#0e539a]'
+                        : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+                    }`}
+                  >
+                    Satu PIN / Token Seragam
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPinConfigMode('random')}
+                    className={`min-h-[42px] px-3 py-2 rounded-xl border text-xs font-semibold text-left transition-colors ${
+                      pinConfigMode === 'random'
+                        ? 'bg-blue-50 border-[#0e539a] text-[#0e539a]'
+                        : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+                    }`}
+                  >
+                    Acak Unik per Siswa (6 Digit)
+                  </button>
+                </div>
+              </div>
+
+              {pinConfigMode === 'custom' ? (
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Nilai PIN / Token Ujian (Min. 4 Karakter)
+                  </label>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      required
+                      minLength={4}
+                      maxLength={32}
+                      value={pinConfigValue}
+                      onChange={(e) => setPinConfigValue(e.target.value)}
+                      placeholder="Contoh: 123456 atau TKA2026"
+                      className="flex-1 min-h-[44px] px-3 py-2 rounded-xl border border-slate-300 text-base sm:text-sm font-mono"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setPinConfigValue(generateRandomTokenString())}
+                      className="min-h-[44px] px-3.5 py-2 rounded-xl border border-slate-200 hover:bg-slate-50 text-xs font-semibold text-slate-700 whitespace-nowrap shrink-0"
+                    >
+                      Acak Token
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <p className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-600 leading-relaxed">
+                  Sistem akan membuatkan PIN angka 6 digit yang berbeda-beda untuk setiap siswa pada sasaran terpilih. Daftar PIN masing-masing tetap dapat dilihat pada kolom PIN Ujian.
+                </p>
+              )}
+            </div>
+
+            <div className="flex flex-col-reverse sm:flex-row justify-end gap-2 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setShowPinConfigModal(false)}
+                className="min-h-[44px] px-4 py-2 rounded-xl border border-slate-200 text-sm font-medium"
+              >
+                Batal
+              </button>
+              <button
+                type="submit"
+                disabled={busy || (pinConfigScope === 'selected' && pinConfigStudentIds.length === 0)}
+                className="min-h-[44px] px-5 py-2 rounded-xl bg-[#0e539a] hover:bg-[#0b437e] text-white text-sm font-semibold disabled:opacity-50"
+              >
+                {busy ? 'Menyimpan...' : 'Terapkan PIN / Token'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* Send Message / Kesan Modal */}
+      {showMessageModal && (
+        <div className="fixed inset-0 z-50 bg-slate-900/55 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4">
+          <form onSubmit={handleSendStudentMessage} className="bg-white border border-slate-200 rounded-t-3xl sm:rounded-2xl max-w-lg w-full p-5 sm:p-6 pb-safe space-y-4 shadow-xl max-h-[92dvh] overflow-y-auto">
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-display font-bold text-slate-900">Kirim Pesan &amp; Kesan ke Siswa</h3>
+              <button type="button" onClick={() => setShowMessageModal(false)} className="text-xs font-semibold text-slate-500 hover:text-slate-800">Tutup</button>
+            </div>
+
+            <div className="space-y-3">
+              <div>
+                <p className="text-xs font-semibold text-slate-700 mb-2">Sasaran Penerima</p>
+                <div className={`grid grid-cols-1 ${isAdmin ? 'sm:grid-cols-3' : 'sm:grid-cols-2'} gap-2`}>
+                  {isAdmin && (
+                    <button
+                      type="button"
+                      onClick={() => setMsgScope('all')}
+                      className={`min-h-[42px] px-3 py-2 rounded-xl border text-xs font-semibold text-left transition-colors ${
+                        msgScope === 'all' ? 'bg-blue-50 border-[#0e539a] text-[#0e539a]' : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+                      }`}
+                    >
+                      Semua Siswa ({students.length})
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setMsgScope('class')}
+                    className={`min-h-[42px] px-3 py-2 rounded-xl border text-xs font-semibold text-left transition-colors ${
+                      msgScope === 'class' ? 'bg-blue-50 border-[#0e539a] text-[#0e539a]' : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+                    }`}
+                  >
+                    Kelas Tertentu
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setMsgScope('selected')}
+                    className={`min-h-[42px] px-3 py-2 rounded-xl border text-xs font-semibold text-left transition-colors ${
+                      msgScope === 'selected' ? 'bg-blue-50 border-[#0e539a] text-[#0e539a]' : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+                    }`}
+                  >
+                    Siswa Tertentu ({msgStudentIds.length})
+                  </button>
+                </div>
+              </div>
+
+              {msgScope === 'class' && (
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Pilih Kelas Tujuan</label>
+                  <select
+                    required
+                    value={msgClassId}
+                    onChange={(e) => setMsgClassId(e.target.value)}
+                    className="w-full min-h-[44px] px-3 py-2 rounded-xl border border-slate-300 bg-white text-sm"
+                  >
+                    {classes.map((c) => (
+                      <option key={c.id} value={c.id}>{c.name} ({c.student_count} siswa)</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              {msgScope === 'selected' && (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-semibold text-slate-700">Pilih Siswa ({msgStudentIds.length} dipilih)</span>
+                    <button type="button" onClick={() => setMsgStudentIds([])} className="text-slate-500 font-semibold hover:underline">
+                      Kosongkan
+                    </button>
+                  </div>
+                  <input
+                    type="text"
+                    value={msgSearch}
+                    onChange={(e) => setMsgSearch(e.target.value)}
+                    placeholder="Cari nama atau NIS siswa..."
+                    className="w-full min-h-[40px] px-3 py-1.5 rounded-xl border border-slate-300 text-xs"
+                  />
+                  <div className="max-h-36 overflow-y-auto border border-slate-200 rounded-xl divide-y divide-slate-100">
+                    {students
+                      .filter((s) => {
+                        const q = msgSearch.trim().toLowerCase();
+                        return !q || s.full_name.toLowerCase().includes(q) || s.nis.toLowerCase().includes(q);
+                      })
+                      .map((s) => {
+                        const checked = msgStudentIds.includes(s.id);
+                        return (
+                          <label key={s.id} className="px-3 py-2 flex items-center justify-between gap-2 text-xs cursor-pointer hover:bg-slate-50">
+                            <span className="flex items-center gap-2 min-w-0">
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={(e) =>
+                                  setMsgStudentIds((prev) => (e.target.checked ? [...prev, s.id] : prev.filter((id) => id !== s.id)))
+                                }
+                                className="w-4 h-4 rounded border-slate-300 shrink-0"
+                              />
+                              <span className="font-medium text-slate-800 truncate">{s.full_name}</span>
+                            </span>
+                            <span className="font-mono text-[11px] text-slate-500 shrink-0 tabular-nums">{s.nis} · {s.class_name}</span>
+                          </label>
+                        );
+                      })}
+                  </div>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Kategori</label>
+                  <select
+                    value={msgCategory}
+                    onChange={(e) => setMsgCategory(e.target.value as 'pesan' | 'peringatan' | 'instruksi' | 'kesan')}
+                    className="w-full min-h-[44px] px-3 py-2 rounded-xl border border-slate-300 bg-white text-sm"
+                  >
+                    <option value="pesan">Pesan / Pengumuman</option>
+                    <option value="instruksi">Instruksi Teknis</option>
+                    <option value="peringatan">Peringatan / Teguran</option>
+                    <option value="kesan">Kesan &amp; Catatan</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Judul Singkat (Opsional)</label>
+                  <input
+                    type="text"
+                    maxLength={120}
+                    value={msgTitle}
+                    onChange={(e) => setMsgTitle(e.target.value)}
+                    placeholder="Contoh: Pengumuman Ruang Ujian"
+                    className="w-full min-h-[44px] px-3 py-2 rounded-xl border border-slate-300 text-sm"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Isi Pesan / Kesan</label>
+                <textarea
+                  required
+                  rows={4}
+                  maxLength={1000}
+                  value={msgBody}
+                  onChange={(e) => setMsgBody(e.target.value)}
+                  placeholder="Tulis pesan, arahan, peringatan, atau kesan untuk siswa..."
+                  className="w-full p-3 rounded-xl border border-slate-300 text-sm"
+                />
+              </div>
+            </div>
+
+            <div className="flex flex-col-reverse sm:flex-row justify-end gap-2 pt-2 border-t border-slate-100">
+              <button type="button" onClick={() => setShowMessageModal(false)} className="min-h-[44px] px-4 py-2 rounded-xl border border-slate-200 text-sm font-medium">
+                Batal
+              </button>
+              <button
+                type="submit"
+                disabled={busy || !msgBody.trim() || (msgScope === 'selected' && msgStudentIds.length === 0)}
+                className="min-h-[44px] px-5 py-2 rounded-xl bg-[#0e539a] hover:bg-[#0b437e] text-white text-sm font-semibold inline-flex items-center justify-center gap-2 disabled:opacity-50"
+              >
+                <Send className="w-4 h-4" />
+                <span>{busy ? 'Mengirim...' : 'Kirim Pesan'}</span>
               </button>
             </div>
           </form>

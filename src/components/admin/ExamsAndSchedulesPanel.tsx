@@ -6,6 +6,7 @@ import {
   Download,
   Edit3,
   FileSpreadsheet,
+  KeyRound,
   Plus,
   Settings2,
   Trash2,
@@ -39,6 +40,8 @@ interface ExamItem {
   proctoring_retention_days: number;
   allow_camera_stream: number;
   publication_policy: PublicationPolicy;
+  access_token_mode?: 'student_pin' | 'exam_token';
+  access_token?: string;
   timezone: string;
   start_at: string;
   entry_deadline_at: string;
@@ -81,6 +84,10 @@ export const ExamsAndSchedulesPanel: React.FC = () => {
   const [showModal, setShowModal] = useState(false);
   const [editingExamId, setEditingExamId] = useState<string | null>(null);
   const [importPreview, setImportPreview] = useState<ExamImportPreview | null>(null);
+  const [showBulkTokenModal, setShowBulkTokenModal] = useState(false);
+  const [bulkTokenScope, setBulkTokenScope] = useState<'all' | 'selected'>('all');
+  const [bulkTokenMode, setBulkTokenMode] = useState<'student_pin' | 'exam_token'>('exam_token');
+  const [bulkTokenValue, setBulkTokenValue] = useState('TKA2026');
   const [busy, setBusy] = useState(false);
   const [banner, setBanner] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   const [confirmState, setConfirmState] = useState<{
@@ -121,6 +128,8 @@ export const ExamsAndSchedulesPanel: React.FC = () => {
     proctoringRetentionDays: 14,
     allowCameraStream: false,
     publicationPolicy: 'view_download_print' as PublicationPolicy,
+    accessTokenMode: 'student_pin' as 'student_pin' | 'exam_token',
+    accessToken: '',
     weights: {
       pg_tunggal: 2,
       pg_kompleks: 4,
@@ -232,6 +241,8 @@ export const ExamsAndSchedulesPanel: React.FC = () => {
       proctoringRetentionDays: ex.proctoring_retention_days || 14,
       allowCameraStream: Boolean(ex.allow_camera_stream),
       publicationPolicy: ex.publication_policy,
+      accessTokenMode: ex.access_token_mode === 'exam_token' ? 'exam_token' : 'student_pin',
+      accessToken: ex.access_token || '',
       weights: parsedWeights,
       comp: parsedComp,
     });
@@ -338,6 +349,50 @@ export const ExamsAndSchedulesPanel: React.FC = () => {
     }
   };
 
+  const generateRandomExamToken = () => {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    let out = '';
+    for (let i = 0; i < 6; i++) out += chars[Math.floor(Math.random() * chars.length)];
+    return out;
+  };
+
+  const openBulkTokenModal = (scope: 'all' | 'selected') => {
+    setBulkTokenScope(scope);
+    setBulkTokenMode('exam_token');
+    setBulkTokenValue(generateRandomExamToken());
+    setShowBulkTokenModal(true);
+  };
+
+  const handleSaveBulkExamToken = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setBanner(null);
+    try {
+      const res = await apiFetch<{ updatedCount: number; accessTokenMode: string }>('/api/admin/exams/bulk-token', {
+        method: 'POST',
+        body: JSON.stringify({
+          scope: bulkTokenScope,
+          examIds: bulkTokenScope === 'selected' ? selectedExamIds : undefined,
+          accessTokenMode: bulkTokenMode,
+          accessToken: bulkTokenMode === 'exam_token' ? bulkTokenValue.trim() : undefined,
+        }),
+      });
+      setShowBulkTokenModal(false);
+      setBanner({
+        type: 'ok',
+        text:
+          res.accessTokenMode === 'exam_token'
+            ? `Token ujian khusus "${bulkTokenValue.trim()}" diterapkan pada ${res.updatedCount} ujian.`
+            : `${res.updatedCount} ujian dikembalikan menggunakan PIN masing-masing siswa.`,
+      });
+      await loadData();
+    } catch (err) {
+      setBanner({ type: 'err', text: err instanceof Error ? err.message : 'Gagal mengatur token ujian.' });
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const allExamsSelected = exams.length > 0 && exams.every((ex) => selectedExamIds.includes(ex.id));
   const examExportUrl = withAuthTokenUrl(
     `/api/admin/exams/export.xlsx${selectedExamIds.length > 0 ? `?ids=${encodeURIComponent(selectedExamIds.join(','))}` : ''}`
@@ -373,6 +428,14 @@ export const ExamsAndSchedulesPanel: React.FC = () => {
             <Download className="w-4 h-4" />
             <span>{selectedExamIds.length > 0 ? `Ekspor (${selectedExamIds.length})` : 'Ekspor Excel'}</span>
           </a>
+          <button
+            type="button"
+            onClick={() => openBulkTokenModal(selectedExamIds.length > 0 ? 'selected' : 'all')}
+            className="min-h-[42px] px-3 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-700 inline-flex items-center gap-1.5"
+          >
+            <KeyRound className="w-4 h-4 text-[#0e539a]" />
+            <span>Atur Token Ujian</span>
+          </button>
           <button
             type="button"
             onClick={openCreateModal}
@@ -448,6 +511,14 @@ export const ExamsAndSchedulesPanel: React.FC = () => {
           {selectedExamIds.length > 0 && (
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-xs font-semibold text-blue-900">{selectedExamIds.length} ujian dipilih</span>
+              <button
+                type="button"
+                onClick={() => openBulkTokenModal('selected')}
+                className="min-h-[38px] px-3 py-1.5 rounded-xl border border-blue-200 bg-white hover:bg-blue-100/50 text-xs font-semibold text-blue-900 inline-flex items-center gap-1"
+              >
+                <KeyRound className="w-3.5 h-3.5" />
+                <span>Atur Token Terpilih</span>
+              </button>
               <a
                 href={examExportUrl}
                 className="min-h-[38px] px-3 py-1.5 rounded-xl border border-blue-200 bg-blue-50 text-xs font-semibold text-blue-900 inline-flex items-center gap-1"
@@ -529,7 +600,12 @@ export const ExamsAndSchedulesPanel: React.FC = () => {
                     <span>{ex.question_count} soal · {ex.duration_minutes} menit · KKM {ex.passing_score}</span>
                   </div>
                   <p className="text-xs text-slate-500">
-                    Auto-Lock: {ex.auto_lock_enabled ? `Aktif (maks ${ex.max_violations}x)` : 'Nonaktif'} · Kamera AI: {ex.proctoring_enabled ? 'Aktif' : 'Nonaktif'}
+                    Auto-Lock: {ex.auto_lock_enabled ? `Aktif (maks ${ex.max_violations}x)` : 'Nonaktif'} · Kamera AI: {ex.proctoring_enabled ? 'Aktif' : 'Nonaktif'} · Akses:{' '}
+                    <span className="font-medium text-slate-700">
+                      {ex.access_token_mode === 'exam_token' && ex.access_token
+                        ? `Token Khusus (${ex.access_token})`
+                        : 'PIN Peserta'}
+                    </span>
                   </p>
                 </div>
               </div>
@@ -790,10 +866,198 @@ export const ExamsAndSchedulesPanel: React.FC = () => {
               </div>
             </div>
 
+            {/* Token / PIN Mulai Tes Setting */}
+            <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3 text-xs">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="font-bold text-slate-800 flex items-center gap-1.5">
+                  <KeyRound className="w-4 h-4 text-[#0e539a]" />
+                  <span>Pengaturan PIN / Token Saat Mulai Tes</span>
+                </p>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setForm({ ...form, accessTokenMode: 'student_pin' })}
+                  className={`min-h-[40px] px-3 py-2 rounded-xl border text-left font-semibold transition-colors ${
+                    form.accessTokenMode === 'student_pin'
+                      ? 'bg-white border-[#0e539a] text-[#0e539a] shadow-xs'
+                      : 'bg-white/60 border-slate-200 text-slate-600'
+                  }`}
+                >
+                  Gunakan PIN Peserta Masing-Masing
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setForm((prev) => ({
+                      ...prev,
+                      accessTokenMode: 'exam_token',
+                      accessToken: prev.accessToken || generateRandomExamToken(),
+                    }))
+                  }
+                  className={`min-h-[40px] px-3 py-2 rounded-xl border text-left font-semibold transition-colors ${
+                    form.accessTokenMode === 'exam_token'
+                      ? 'bg-white border-[#0e539a] text-[#0e539a] shadow-xs'
+                      : 'bg-white/60 border-slate-200 text-slate-600'
+                  }`}
+                >
+                  Token Khusus untuk Ujian Ini
+                </button>
+              </div>
+              {form.accessTokenMode === 'exam_token' && (
+                <div className="flex flex-col sm:flex-row gap-2 pt-1">
+                  <input
+                    type="text"
+                    required
+                    minLength={4}
+                    maxLength={32}
+                    value={form.accessToken}
+                    onChange={(e) => setForm({ ...form, accessToken: e.target.value })}
+                    placeholder="Masukkan Token Khusus (min. 4 karakter)"
+                    className="flex-1 min-h-[40px] px-3 py-2 rounded-xl border border-slate-300 bg-white font-mono text-sm"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setForm({ ...form, accessToken: generateRandomExamToken() })}
+                    className="min-h-[40px] px-3 py-2 rounded-xl border border-slate-300 bg-white hover:bg-slate-100 font-semibold text-slate-700 whitespace-nowrap shrink-0"
+                  >
+                    Acak Token
+                  </button>
+                </div>
+              )}
+            </div>
+
             <div className="flex flex-col-reverse sm:flex-row justify-end gap-2 pt-2">
               <button type="button" onClick={() => setShowModal(false)} className="min-h-[44px] px-4 py-2 rounded-xl border border-slate-200 text-sm font-medium">Batal</button>
               <button type="submit" disabled={busy} className="min-h-[44px] px-5 py-2 rounded-xl bg-blue-900 text-white text-sm font-semibold disabled:opacity-50">
                 {editingExamId ? 'Simpan Perubahan' : 'Simpan Ujian'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* Bulk Exam Token Modal (All vs Selected Exams) */}
+      {showBulkTokenModal && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4">
+          <form
+            onSubmit={handleSaveBulkExamToken}
+            className="bg-white border border-slate-200 rounded-t-3xl sm:rounded-2xl max-w-md w-full p-5 sm:p-6 space-y-4 max-h-[92dvh] overflow-y-auto pb-safe"
+          >
+            <div className="w-10 h-1 rounded-full bg-slate-300 mx-auto sm:hidden" />
+            <div className="flex items-center justify-between gap-2 border-b border-slate-100 pb-3">
+              <h3 className="text-lg font-display font-bold text-slate-900 flex items-center gap-2">
+                <KeyRound className="w-5 h-5 text-[#0e539a]" />
+                <span>Pengaturan Token Ujian</span>
+              </h3>
+              <button
+                type="button"
+                onClick={() => setShowBulkTokenModal(false)}
+                className="min-h-[36px] px-2.5 rounded-lg text-xs font-semibold text-slate-500 hover:bg-slate-100"
+              >
+                Tutup
+              </button>
+            </div>
+
+            <div className="space-y-4 text-sm">
+              <div>
+                <p className="text-xs font-semibold text-slate-700 mb-2">Sasaran Ujian</p>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setBulkTokenScope('all')}
+                    className={`min-h-[42px] px-3 py-2 rounded-xl border text-xs font-semibold transition-colors ${
+                      bulkTokenScope === 'all'
+                        ? 'bg-blue-50 border-[#0e539a] text-[#0e539a]'
+                        : 'bg-white border-slate-200 text-slate-700'
+                    }`}
+                  >
+                    Semua Ujian ({exams.length})
+                  </button>
+                  <button
+                    type="button"
+                    disabled={selectedExamIds.length === 0}
+                    onClick={() => setBulkTokenScope('selected')}
+                    className={`min-h-[42px] px-3 py-2 rounded-xl border text-xs font-semibold transition-colors disabled:opacity-50 ${
+                      bulkTokenScope === 'selected'
+                        ? 'bg-blue-50 border-[#0e539a] text-[#0e539a]'
+                        : 'bg-white border-slate-200 text-slate-700'
+                    }`}
+                  >
+                    Ujian Terpilih ({selectedExamIds.length})
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <p className="text-xs font-semibold text-slate-700 mb-2">Mode Validasi Mulai Tes</p>
+                <div className="space-y-2">
+                  <button
+                    type="button"
+                    onClick={() => setBulkTokenMode('exam_token')}
+                    className={`w-full min-h-[42px] px-3 py-2 rounded-xl border text-xs font-semibold text-left transition-colors ${
+                      bulkTokenMode === 'exam_token'
+                        ? 'bg-blue-50 border-[#0e539a] text-[#0e539a]'
+                        : 'bg-white border-slate-200 text-slate-700'
+                    }`}
+                  >
+                    Token Khusus Ujian (Seragam untuk sasaran terpilih)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setBulkTokenMode('student_pin')}
+                    className={`w-full min-h-[42px] px-3 py-2 rounded-xl border text-xs font-semibold text-left transition-colors ${
+                      bulkTokenMode === 'student_pin'
+                        ? 'bg-blue-50 border-[#0e539a] text-[#0e539a]'
+                        : 'bg-white border-slate-200 text-slate-700'
+                    }`}
+                  >
+                    Gunakan PIN Masing-Masing Siswa
+                  </button>
+                </div>
+              </div>
+
+              {bulkTokenMode === 'exam_token' && (
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Token Khusus (Min. 4 Karakter)
+                  </label>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      required
+                      minLength={4}
+                      maxLength={32}
+                      value={bulkTokenValue}
+                      onChange={(e) => setBulkTokenValue(e.target.value)}
+                      className="flex-1 min-h-[44px] px-3 py-2 rounded-xl border border-slate-300 font-mono text-sm"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setBulkTokenValue(generateRandomExamToken())}
+                      className="min-h-[44px] px-3 py-2 rounded-xl border border-slate-200 hover:bg-slate-50 text-xs font-semibold text-slate-700 whitespace-nowrap shrink-0"
+                    >
+                      Acak
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="flex flex-col-reverse sm:flex-row justify-end gap-2 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setShowBulkTokenModal(false)}
+                className="min-h-[44px] px-4 py-2 rounded-xl border border-slate-200 text-sm font-medium"
+              >
+                Batal
+              </button>
+              <button
+                type="submit"
+                disabled={busy}
+                className="min-h-[44px] px-5 py-2 rounded-xl bg-[#0e539a] hover:bg-[#0b437e] text-white text-sm font-semibold disabled:opacity-50"
+              >
+                {busy ? 'Menyimpan...' : 'Terapkan ke Ujian'}
               </button>
             </div>
           </form>

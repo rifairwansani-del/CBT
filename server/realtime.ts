@@ -15,6 +15,7 @@ class RealtimeHub {
   private clients = new Set<ConnectedClient>();
   private adminClients = new Set<ConnectedClient>();
   private studentSessions = new Map<string, ConnectedClient>(); // sessionId -> client
+  private studentAccounts = new Map<string, Set<ConnectedClient>>(); // studentId -> clients
   private activeCameraStreams = new Map<string, Set<string>>(); // sessionId -> set of admin userIds watching
   private pendingMonitorEvents: Array<Record<string, unknown>> = [];
   private flushTimer: NodeJS.Timeout | null = null;
@@ -46,9 +47,19 @@ class RealtimeHub {
             activeStreamCount: this.getTotalActiveStreamCount(),
             maxStreams: this.MAX_CONCURRENT_STREAMS,
           }));
-        } else if (auth.role === 'siswa' && sessionId) {
-          this.studentSessions.set(sessionId, client);
-          ws.send(JSON.stringify({ type: 'connected', role: 'siswa', sessionId }));
+        } else if (auth.role === 'siswa') {
+          if (auth.studentId) {
+            if (!this.studentAccounts.has(auth.studentId)) {
+              this.studentAccounts.set(auth.studentId, new Set());
+            }
+            this.studentAccounts.get(auth.studentId)!.add(client);
+          }
+          if (sessionId) {
+            this.studentSessions.set(sessionId, client);
+            ws.send(JSON.stringify({ type: 'connected', role: 'siswa', sessionId }));
+          } else {
+            ws.send(JSON.stringify({ type: 'connected', role: 'siswa' }));
+          }
         }
 
         ws.on('message', (raw) => {
@@ -63,6 +74,13 @@ class RealtimeHub {
         ws.on('close', () => {
           this.clients.delete(client);
           this.adminClients.delete(client);
+          if (client.auth.studentId) {
+            const set = this.studentAccounts.get(client.auth.studentId);
+            if (set) {
+              set.delete(client);
+              if (set.size === 0) this.studentAccounts.delete(client.auth.studentId);
+            }
+          }
           if (client.sessionId && this.studentSessions.get(client.sessionId) === client) {
             this.studentSessions.delete(client.sessionId);
             this.activeCameraStreams.delete(client.sessionId);
@@ -204,6 +222,17 @@ class RealtimeHub {
     const client = this.studentSessions.get(sessionId);
     if (client && client.ws.readyState === WebSocket.OPEN) {
       client.ws.send(JSON.stringify(payload));
+    }
+  }
+
+  sendToStudentAccount(studentId: string, payload: Record<string, unknown>) {
+    const set = this.studentAccounts.get(studentId);
+    if (!set) return;
+    const data = JSON.stringify(payload);
+    for (const client of set) {
+      if (client.ws.readyState === WebSocket.OPEN) {
+        client.ws.send(data);
+      }
     }
   }
 

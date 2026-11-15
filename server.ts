@@ -3,7 +3,6 @@ import http from 'node:http';
 import path from 'node:path';
 import express from 'express';
 import cookieParser from 'cookie-parser';
-import { createServer as createViteServer } from 'vite';
 import { initDatabase, seedInitialData } from './server/db.ts';
 import { createApiRouter } from './server/routes.ts';
 import { realtimeHub } from './server/realtime.ts';
@@ -13,7 +12,7 @@ async function startServer() {
   seedInitialData();
 
   const app = express();
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT) || 3000;
   app.set('trust proxy', 1);
 
   // Security headers & JSON parsing
@@ -34,6 +33,7 @@ async function startServer() {
   realtimeHub.attach(server);
 
   if (process.env.NODE_ENV !== 'production') {
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: {
         middlewareMode: true,

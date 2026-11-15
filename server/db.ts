@@ -136,6 +136,8 @@ export function initDatabase() {
       allow_camera_stream INTEGER NOT NULL DEFAULT 0,
       publication_policy TEXT NOT NULL CHECK(publication_policy IN ('hidden', 'view_only', 'view_download', 'view_download_print')) DEFAULT 'view_download_print',
       publish_at TEXT,
+      access_token_mode TEXT NOT NULL DEFAULT 'student_pin',
+      access_token TEXT NOT NULL DEFAULT '',
       created_by TEXT REFERENCES users(id),
       created_at TEXT NOT NULL
     );
@@ -301,6 +303,22 @@ export function initDatabase() {
       updated_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS student_messages (
+      id TEXT PRIMARY KEY,
+      student_id TEXT NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+      exam_id TEXT REFERENCES exams(id) ON DELETE CASCADE,
+      session_id TEXT REFERENCES exam_sessions(id) ON DELETE SET NULL,
+      sender_id TEXT NOT NULL,
+      sender_role TEXT NOT NULL,
+      sender_name TEXT NOT NULL,
+      category TEXT NOT NULL DEFAULT 'pesan',
+      title TEXT NOT NULL DEFAULT '',
+      message TEXT NOT NULL,
+      is_read INTEGER NOT NULL DEFAULT 0,
+      read_at TEXT,
+      created_at TEXT NOT NULL
+    );
+
     -- Critical Indexes for 1,300 concurrent CBT performance
     CREATE INDEX IF NOT EXISTS idx_students_nis ON students(nis);
     CREATE INDEX IF NOT EXISTS idx_students_class ON students(class_id);
@@ -314,6 +332,7 @@ export function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_violations_session ON violation_logs(session_id, server_timestamp);
     CREATE INDEX IF NOT EXISTS idx_proctoring_session ON proctoring_events(session_id, server_timestamp);
     CREATE INDEX IF NOT EXISTS idx_chat_exam_student ON chat_messages(exam_id, recipient_student_id, server_timestamp);
+    CREATE INDEX IF NOT EXISTS idx_student_messages_student ON student_messages(student_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_logs(server_timestamp);
   `);
 
@@ -340,6 +359,15 @@ export function initDatabase() {
   }
   if (!studentCols.some((c) => c.name === 'photo_link')) {
     db.exec("ALTER TABLE students ADD COLUMN photo_link TEXT NOT NULL DEFAULT '';");
+  }
+
+  // Safe migration for existing databases: ensure exams.access_token_mode and access_token exist
+  const examCols = db.prepare('PRAGMA table_info(exams)').all() as Array<{ name: string }>;
+  if (!examCols.some((c) => c.name === 'access_token_mode')) {
+    db.exec("ALTER TABLE exams ADD COLUMN access_token_mode TEXT NOT NULL DEFAULT 'student_pin';");
+  }
+  if (!examCols.some((c) => c.name === 'access_token')) {
+    db.exec("ALTER TABLE exams ADD COLUMN access_token TEXT NOT NULL DEFAULT '';");
   }
 
   // Idempotent synthetic backfill for seeded demo accounts created before new profile fields existed

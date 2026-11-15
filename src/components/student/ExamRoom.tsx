@@ -63,6 +63,7 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
   });
 
   // Server-authoritative clock offset (ms)
+  const [serverEndAt, setServerEndAt] = useState(session.serverEndAt);
   const [clockOffsetMs, setClockOffsetMs] = useState(() => new Date(initialPayload.serverTime).getTime() - Date.now());
   const [remainingSec, setRemainingSec] = useState(() => {
     const endMs = new Date(session.serverEndAt).getTime();
@@ -76,6 +77,7 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('saved');
   const [pendingQueueCount, setPendingQueueCount] = useState(() => Object.keys(loadOfflineAnswerQueue(session.id)).length);
+  const [liveNotice, setLiveNotice] = useState<{ title: string; text: string; tone: 'info' | 'warn' } | null>(null);
 
   const [showNavigator, setShowNavigator] = useState(false);
   const [showSubmitModal, setShowSubmitModal] = useState(false);
@@ -184,7 +186,7 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
   useEffect(() => {
     const interval = setInterval(() => {
       const serverNowMs = Date.now() + clockOffsetMs;
-      const endMs = new Date(session.serverEndAt).getTime();
+      const endMs = new Date(serverEndAt).getTime();
       const secs = Math.max(0, Math.floor((endMs - serverNowMs) / 1000));
       setRemainingSec(secs);
       if (secs === 0 && (sessionStatus === 'in_progress' || sessionStatus === 'locked')) {
@@ -200,7 +202,7 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
       }
     }, 1000);
     return () => clearInterval(interval);
-  }, [clockOffsetMs, session.serverEndAt, session.id, sessionStatus, onExitExam]);
+  }, [clockOffsetMs, serverEndAt, session.id, sessionStatus, onExitExam]);
 
   // Periodic heartbeat every 15s (checks unlock status & syncs server clock)
   useEffect(() => {
@@ -208,11 +210,13 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
       try {
         const res = await apiFetch<{
           serverTime: string;
+          serverEndAt?: string;
           status: string;
           lockReason: string | null;
           violationCount: number;
         }>(`/api/student/sessions/${session.id}/heartbeat`, { method: 'POST' });
         setClockOffsetMs(new Date(res.serverTime).getTime() - Date.now());
+        if (res.serverEndAt) setServerEndAt(res.serverEndAt);
         setSessionStatus(res.status);
         setLockReason(res.lockReason);
         setViolationCount(res.violationCount);
@@ -220,14 +224,20 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
         if (res.status === 'expired' || res.status === 'submitted') {
           onExitExam();
         }
-      } catch {
+      } catch (err) {
+        const status = (err as { status?: number }).status;
+        if (status === 404) {
+          saveOfflineAnswerQueue(session.id, {});
+          onExitExam();
+          return;
+        }
         setIsOnline(false);
       }
     }, 15000);
     return () => clearInterval(hb);
   }, [session.id, onExitExam]);
 
-  // WebSocket for instant unlock, chat, and WebRTC camera stream requests
+  // WebSocket for instant lock/unlock/reset/time-extension, chat, and WebRTC camera stream requests
   useEffect(() => {
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = withAuthTokenUrl(`${proto}//${window.location.host}/ws?sessionId=${encodeURIComponent(session.id)}&examId=${encodeURIComponent(session.examId)}`);
@@ -237,12 +247,42 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
     ws.onmessage = async (evt) => {
       try {
         const msg = JSON.parse(evt.data);
-        if (msg.type === 'session:unlocked') {
+        if (msg.type === 'session:locked') {
+          setSessionStatus('locked');
+          setLockReason(msg.lockReason || 'Sesi dikunci sementara oleh pengawas/admin.');
+        } else if (msg.type === 'session:unlocked') {
           setSessionStatus('in_progress');
           setLockReason(null);
           flushAnswerQueue();
+        } else if (msg.type === 'session:reset_violations') {
+          setViolationCount(0);
+          setLockReason(null);
+          if (msg.status) setSessionStatus(msg.status);
+          setLiveNotice({
+            title: 'Pelanggaran Direset',
+            text: msg.notes || 'Catatan pelanggaran Anda telah direset oleh admin/pengawas.',
+            tone: 'info',
+          });
+          flushAnswerQueue();
+        } else if (msg.type === 'session:time_extended' && msg.serverEndAt) {
+          setServerEndAt(String(msg.serverEndAt));
+          setLiveNotice({
+            title: 'Waktu Ujian Ditambah',
+            text: `Alokasi waktu ujian Anda ditambah +${msg.extraMinutes || 0} menit oleh pengawas/admin.`,
+            tone: 'info',
+          });
+        } else if (msg.type === 'session:reset_exam') {
+          saveOfflineAnswerQueue(session.id, {});
+          onExitExam();
         } else if (msg.type === 'session:force_submitted') {
           onExitExam();
+        } else if (msg.type === 'student:message' && msg.message) {
+          const item = msg.message as { title?: string; message: string; sender_name?: string; category?: string };
+          setLiveNotice({
+            title: item.title || `Pesan dari ${item.sender_name || 'Pengawas'}`,
+            text: item.message,
+            tone: item.category === 'peringatan' ? 'warn' : 'info',
+          });
         } else if (msg.type === 'chat:new' && msg.message) {
           setChatMessages((prev) => (prev.some((m) => m.id === msg.message.id) ? prev : [...prev, msg.message]));
           if (!showChat && msg.message.sender_role !== 'siswa') {
@@ -634,6 +674,31 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
           </div>
         </div>
       </header>
+
+      {/* Live Notice Banner from Admin/Pengawas */}
+      {liveNotice && (
+        <div className="w-full max-w-6xl mx-auto px-3 sm:px-6 pt-3">
+          <div
+            className={`p-3.5 rounded-xl border flex items-start justify-between gap-3 text-xs sm:text-sm ${
+              liveNotice.tone === 'warn'
+                ? 'bg-amber-50 border-amber-300 text-amber-950'
+                : 'bg-sky-50 border-sky-200 text-slate-900'
+            }`}
+          >
+            <div className="min-w-0">
+              <p className="font-display font-bold">{liveNotice.title}</p>
+              <p className="mt-0.5 leading-relaxed">{liveNotice.text}</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setLiveNotice(null)}
+              className="px-2.5 py-1 rounded-lg border border-slate-300 bg-white text-xs font-semibold text-slate-700 shrink-0"
+            >
+              Tutup
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Main Responsive TKA Exam Area */}
       <div className="flex-1 w-full max-w-6xl mx-auto p-3 sm:p-6 pb-24 grid grid-cols-1 lg:grid-cols-12 gap-5 sm:gap-6">

@@ -851,6 +851,7 @@ export function createApiRouter() {
           endAt: e.end_at,
           availability,
           publicationPolicy: isPublished ? e.publication_policy : 'hidden',
+          usesExamToken: e.access_token_mode === 'exam_token' && Boolean(String(e.access_token || '').trim()),
           session: sess
             ? {
                 id: sess.id,
@@ -926,6 +927,8 @@ export function createApiRouter() {
           proctoring_sensitivity: string;
           proctoring_tolerance: number;
           allow_camera_stream: number;
+          access_token_mode?: string;
+          access_token?: string;
           start_at: string;
           entry_deadline_at: string;
           end_at: string;
@@ -944,7 +947,7 @@ export function createApiRouter() {
       return;
     }
 
-    // Verify student exam PIN / Password Ujian / Token with brute-force protection
+    // Verify exam access token or student exam PIN with brute-force protection
     const pinAttemptKey = `exampin:${studentId}`;
     const pinAttempt = db.prepare('SELECT * FROM login_attempts WHERE identifier = ?').get(pinAttemptKey) as
       | { fail_count: number; locked_until: string | null }
@@ -967,7 +970,12 @@ export function createApiRouter() {
       return;
     }
 
-    if (!bcrypt.compareSync(cleanPin, studentRecord.pin_hash)) {
+    const usesExamToken = exam.access_token_mode === 'exam_token' && Boolean(String(exam.access_token || '').trim());
+    const tokenValid = usesExamToken
+      ? cleanPin === String(exam.access_token || '').trim()
+      : bcrypt.compareSync(cleanPin, studentRecord.pin_hash);
+
+    if (!tokenValid) {
       const nextCount = (pinAttempt?.fail_count || 0) + 1;
       const lockedUntil = nextCount >= 5 ? new Date(Date.now() + 5 * 60 * 1000).toISOString() : null;
       db.prepare(`
@@ -975,7 +983,11 @@ export function createApiRouter() {
         VALUES (?, ?, ?, ?, ?)
         ON CONFLICT(identifier) DO UPDATE SET fail_count = excluded.fail_count, locked_until = excluded.locked_until, updated_at = excluded.updated_at
       `).run(pinAttemptKey, ip, nextCount, lockedUntil, new Date().toISOString());
-      res.status(401).json({ error: 'PIN / Password Ujian / Token tidak sesuai. Periksa kembali atau hubungi panitia.' });
+      res.status(401).json({
+        error: usesExamToken
+          ? 'Token ujian tidak sesuai. Periksa kembali token khusus ujian ini atau hubungi pengawas.'
+          : 'PIN / Password Ujian tidak sesuai. Periksa kembali atau hubungi panitia.',
+      });
       return;
     }
 
@@ -1514,6 +1526,42 @@ export function createApiRouter() {
     res.json({ message: record });
   });
 
+  // Student Inbox Messages / Kesan / Pengumuman from Admin & Pengawas
+  router.get('/student/messages', requireAuth, requireRole(['siswa']), (req, res) => {
+    const auth = req.auth!;
+    const messages = db.prepare(`
+      SELECT id, student_id, exam_id, session_id, sender_id, sender_role, sender_name, category, title, message, is_read, read_at, created_at
+      FROM student_messages
+      WHERE student_id = ?
+      ORDER BY created_at DESC
+      LIMIT 40
+    `).all(auth.studentId!);
+
+    res.json({ messages });
+  });
+
+  router.post('/student/messages/:messageId/read', requireAuth, requireRole(['siswa']), (req, res) => {
+    const auth = req.auth!;
+    const { messageId } = req.params;
+    const nowIso = new Date().toISOString();
+
+    if (messageId === 'all') {
+      db.prepare(`
+        UPDATE student_messages
+        SET is_read = 1, read_at = COALESCE(read_at, ?)
+        WHERE student_id = ? AND is_read = 0
+      `).run(nowIso, auth.studentId!);
+    } else {
+      db.prepare(`
+        UPDATE student_messages
+        SET is_read = 1, read_at = COALESCE(read_at, ?)
+        WHERE id = ? AND student_id = ?
+      `).run(nowIso, messageId, auth.studentId!);
+    }
+
+    res.json({ ok: true });
+  });
+
   // Student Rapor / Result Details (Strictly gated by publication_policy & publish_at!)
   router.get('/student/results/:examId', requireAuth, requireRole(['siswa']), (req, res) => {
     const auth = req.auth!;
@@ -1838,6 +1886,432 @@ export function createApiRouter() {
     });
     realtimeHub.sendToStudent(sessionId, { type: 'session:force_submitted' });
     res.json({ ok: true, score });
+  });
+
+  // Lock active session manually by admin/proctor
+  router.post('/monitor/sessions/:sessionId/lock', requireAuth, requireRole(['admin', 'pengawas']), (req, res) => {
+    const auth = req.auth!;
+    const { sessionId } = req.params;
+    const { reason } = req.body || {};
+
+    const session = db.prepare(`
+      SELECT es.*, st.class_id, st.full_name
+      FROM exam_sessions es JOIN students st ON st.id = es.student_id
+      WHERE es.id = ?
+    `).get(sessionId) as
+      | { id: string; exam_id: string; student_id: string; class_id: string; full_name: string; status: string; violation_count: number }
+      | undefined;
+
+    if (!session) {
+      res.status(404).json({ error: 'Sesi tidak ditemukan.' });
+      return;
+    }
+    if (!canAccessClassOrExam(auth, session.class_id, session.exam_id)) {
+      res.status(403).json({ error: 'Sesi di luar kelas/ujian yang ditugaskan.' });
+      return;
+    }
+    if (session.status === 'submitted' || session.status === 'expired') {
+      res.status(409).json({ error: 'Sesi sudah selesai dan tidak dapat dikunci.' });
+      return;
+    }
+
+    const nowIso = new Date().toISOString();
+    const lockReason = String(reason || `Sesi dikunci oleh ${auth.role === 'admin' ? 'Admin' : 'Pengawas'} (${auth.name}).`).trim().slice(0, 240);
+
+    db.prepare(`
+      UPDATE exam_sessions
+      SET status = 'locked', lock_reason = ?
+      WHERE id = ?
+    `).run(lockReason, sessionId);
+
+    db.prepare(`
+      INSERT INTO violation_logs (id, session_id, exam_id, student_id, event_type, details_json, occurrence_number, triggered_lock, admin_action, admin_id, action_notes, server_timestamp)
+      VALUES (?, ?, ?, ?, 'penguncian_manual_pengawas', ?, ?, 1, 'LOCK_SESSION', ?, ?, ?)
+    `).run(
+      crypto.randomUUID(),
+      sessionId,
+      session.exam_id,
+      session.student_id,
+      JSON.stringify({ lockedByName: auth.name }),
+      session.violation_count,
+      auth.userId,
+      lockReason,
+      nowIso
+    );
+
+    writeAuditLog({
+      actorId: auth.userId,
+      actorRole: auth.role,
+      actorName: auth.name,
+      action: 'LOCK_EXAM_SESSION',
+      targetType: 'exam_session',
+      targetId: sessionId,
+      details: { studentName: session.full_name, reason: lockReason },
+      ipAddress: req.ip,
+    });
+
+    realtimeHub.sendToStudent(sessionId, {
+      type: 'session:locked',
+      lockReason,
+      timestamp: nowIso,
+    });
+    realtimeHub.queueMonitorUpdate({
+      kind: 'session_locked',
+      priority: 'high',
+      examId: session.exam_id,
+      sessionId,
+      studentId: session.student_id,
+      status: 'locked',
+      timestamp: nowIso,
+    });
+
+    res.json({ ok: true, status: 'locked', lockReason });
+  });
+
+  // Reset session: reset violation counter/unlock OR full session reset (retake from scratch)
+  router.post('/monitor/sessions/:sessionId/reset', requireAuth, requireRole(['admin', 'pengawas']), (req, res) => {
+    const auth = req.auth!;
+    const { sessionId } = req.params;
+    const { mode, notes } = req.body || {};
+    const resetMode = mode === 'full_session' ? 'full_session' : 'violations';
+
+    if (auth.role === 'pengawas' && !auth.canUnlockSessions) {
+      res.status(403).json({ error: 'Pengawas ini tidak diberi izin khusus untuk mereset sesi peserta.' });
+      return;
+    }
+
+    const session = db.prepare(`
+      SELECT es.*, st.class_id, st.full_name, st.nis
+      FROM exam_sessions es JOIN students st ON st.id = es.student_id
+      WHERE es.id = ?
+    `).get(sessionId) as
+      | { id: string; exam_id: string; student_id: string; class_id: string; full_name: string; nis: string; status: string; server_end_at: string }
+      | undefined;
+
+    if (!session) {
+      res.status(404).json({ error: 'Sesi tidak ditemukan.' });
+      return;
+    }
+    if (!canAccessClassOrExam(auth, session.class_id, session.exam_id)) {
+      res.status(403).json({ error: 'Sesi di luar kelas/ujian yang ditugaskan.' });
+      return;
+    }
+
+    const nowIso = new Date().toISOString();
+    const cleanNote = String(notes || (resetMode === 'full_session' ? 'Reset sesi ujian dari awal' : 'Reset pelanggaran & buka kunci')).trim().slice(0, 240);
+
+    if (resetMode === 'full_session') {
+      const tx = db.transaction(() => {
+        db.prepare('DELETE FROM exam_sessions WHERE id = ?').run(sessionId);
+        db.prepare('DELETE FROM login_attempts WHERE identifier = ?').run(`exampin:${session.student_id}`);
+      });
+      tx();
+
+      writeAuditLog({
+        actorId: auth.userId,
+        actorRole: auth.role,
+        actorName: auth.name,
+        action: 'RESET_EXAM_SESSION',
+        targetType: 'exam_session',
+        targetId: sessionId,
+        details: { studentName: session.full_name, nis: session.nis, examId: session.exam_id, notes: cleanNote },
+        ipAddress: req.ip,
+      });
+
+      realtimeHub.sendToStudent(sessionId, {
+        type: 'session:reset_exam',
+        notes: cleanNote,
+        timestamp: nowIso,
+      });
+      realtimeHub.sendToStudentAccount(session.student_id, {
+        type: 'session:reset_exam',
+        examId: session.exam_id,
+        notes: cleanNote,
+        timestamp: nowIso,
+      });
+      realtimeHub.queueMonitorUpdate({
+        kind: 'session_reset',
+        priority: 'high',
+        examId: session.exam_id,
+        sessionId,
+        studentId: session.student_id,
+        timestamp: nowIso,
+      });
+
+      res.json({ ok: true, mode: 'full_session' });
+      return;
+    }
+
+    // Mode: 'violations' -> reset violation_count to 0, clear lock_reason, reopen if locked & time remains
+    const stillHasTime = Date.now() < new Date(session.server_end_at).getTime();
+    const nextStatus = session.status === 'locked' && stillHasTime ? 'in_progress' : session.status;
+
+    db.prepare(`
+      UPDATE exam_sessions
+      SET violation_count = 0,
+          lock_reason = NULL,
+          status = ?,
+          unlocked_by = ?,
+          unlocked_at = ?,
+          unlock_notes = ?
+      WHERE id = ?
+    `).run(nextStatus, auth.userId, nowIso, cleanNote, sessionId);
+
+    db.prepare('DELETE FROM login_attempts WHERE identifier = ?').run(`exampin:${session.student_id}`);
+
+    db.prepare(`
+      INSERT INTO violation_logs (id, session_id, exam_id, student_id, event_type, details_json, occurrence_number, triggered_lock, admin_action, admin_id, action_notes, server_timestamp)
+      VALUES (?, ?, ?, ?, 'reset_pelanggaran_admin', ?, 0, 0, 'RESET_VIOLATIONS', ?, ?, ?)
+    `).run(
+      crypto.randomUUID(),
+      sessionId,
+      session.exam_id,
+      session.student_id,
+      JSON.stringify({ resetByName: auth.name }),
+      auth.userId,
+      cleanNote,
+      nowIso
+    );
+
+    writeAuditLog({
+      actorId: auth.userId,
+      actorRole: auth.role,
+      actorName: auth.name,
+      action: 'RESET_SESSION_VIOLATIONS',
+      targetType: 'exam_session',
+      targetId: sessionId,
+      details: { studentName: session.full_name, notes: cleanNote },
+      ipAddress: req.ip,
+    });
+
+    realtimeHub.sendToStudent(sessionId, {
+      type: 'session:reset_violations',
+      status: nextStatus,
+      notes: cleanNote,
+      timestamp: nowIso,
+    });
+    realtimeHub.queueMonitorUpdate({
+      kind: 'violations_reset',
+      priority: 'high',
+      examId: session.exam_id,
+      sessionId,
+      studentId: session.student_id,
+      status: nextStatus,
+      timestamp: nowIso,
+    });
+
+    res.json({ ok: true, mode: 'violations', status: nextStatus });
+  });
+
+  // Extend session timer (+extraMinutes)
+  router.post('/monitor/sessions/:sessionId/extend-time', requireAuth, requireRole(['admin', 'pengawas']), (req, res) => {
+    const auth = req.auth!;
+    const { sessionId } = req.params;
+    const extraMinutes = Math.max(1, Math.min(180, Number(req.body?.extraMinutes || 0)));
+
+    if (!Number.isFinite(extraMinutes) || extraMinutes < 1) {
+      res.status(400).json({ error: 'Tambahan waktu harus antara 1 hingga 180 menit.' });
+      return;
+    }
+
+    const session = db.prepare(`
+      SELECT es.*, st.class_id, st.full_name
+      FROM exam_sessions es JOIN students st ON st.id = es.student_id
+      WHERE es.id = ?
+    `).get(sessionId) as
+      | { id: string; exam_id: string; student_id: string; class_id: string; full_name: string; status: string; server_end_at: string }
+      | undefined;
+
+    if (!session) {
+      res.status(404).json({ error: 'Sesi tidak ditemukan.' });
+      return;
+    }
+    if (!canAccessClassOrExam(auth, session.class_id, session.exam_id)) {
+      res.status(403).json({ error: 'Akses ditolak.' });
+      return;
+    }
+    if (session.status === 'submitted' || session.status === 'expired') {
+      res.status(409).json({ error: 'Sesi sudah selesai. Gunakan Reset Ujian jika peserta perlu mengulang.' });
+      return;
+    }
+
+    const baseMs = Math.max(Date.now(), new Date(session.server_end_at).getTime());
+    const nextEndIso = new Date(baseMs + extraMinutes * 60 * 1000).toISOString();
+    const nowIso = new Date().toISOString();
+
+    db.prepare('UPDATE exam_sessions SET server_end_at = ? WHERE id = ?').run(nextEndIso, sessionId);
+
+    writeAuditLog({
+      actorId: auth.userId,
+      actorRole: auth.role,
+      actorName: auth.name,
+      action: 'EXTEND_SESSION_TIME',
+      targetType: 'exam_session',
+      targetId: sessionId,
+      details: { studentName: session.full_name, extraMinutes, serverEndAt: nextEndIso },
+      ipAddress: req.ip,
+    });
+
+    realtimeHub.sendToStudent(sessionId, {
+      type: 'session:time_extended',
+      extraMinutes,
+      serverEndAt: nextEndIso,
+      timestamp: nowIso,
+    });
+    realtimeHub.queueMonitorUpdate({
+      kind: 'time_extended',
+      examId: session.exam_id,
+      sessionId,
+      studentId: session.student_id,
+      timestamp: nowIso,
+    });
+
+    res.json({ ok: true, extraMinutes, serverEndAt: nextEndIso });
+  });
+
+  // Bulk monitoring actions for selected sessions in an exam
+  router.post('/monitor/exams/:examId/bulk-action', requireAuth, requireRole(['admin', 'pengawas']), (req, res) => {
+    const auth = req.auth!;
+    const { examId } = req.params;
+    const { action, sessionIds, notes, extraMinutes } = req.body || {};
+    const validActions = ['lock', 'unlock', 'reset_violations', 'reset_session', 'extend_time', 'force_submit'];
+    if (!validActions.includes(action)) {
+      res.status(400).json({ error: 'Aksi monitoring massal tidak valid.' });
+      return;
+    }
+
+    if (auth.role === 'pengawas' && (action === 'unlock' || action === 'reset_session' || action === 'reset_violations') && !auth.canUnlockSessions) {
+      res.status(403).json({ error: 'Pengawas ini tidak memiliki izin membuka kunci / mereset sesi.' });
+      return;
+    }
+
+    const ids = Array.isArray(sessionIds) ? (sessionIds as string[]).map((s) => String(s).trim()).filter(Boolean) : [];
+    if (ids.length === 0) {
+      res.status(400).json({ error: 'Pilih minimal satu peserta yang sudah memiliki sesi ujian.' });
+      return;
+    }
+
+    const placeholders = ids.map(() => '?').join(',');
+    const sessions = db.prepare(`
+      SELECT es.*, st.class_id, st.full_name
+      FROM exam_sessions es JOIN students st ON st.id = es.student_id
+      WHERE es.exam_id = ? AND es.id IN (${placeholders})
+    `).all(examId, ...ids) as Array<{
+      id: string;
+      exam_id: string;
+      student_id: string;
+      class_id: string;
+      full_name: string;
+      status: string;
+      violation_count: number;
+      server_end_at: string;
+    }>;
+
+    const nowMs = Date.now();
+    const nowIso = new Date(nowMs).toISOString();
+    const cleanNotes = String(notes || '').trim().slice(0, 240);
+    const addMins = Math.max(1, Math.min(180, Number(extraMinutes || 10)));
+
+    let affectedCount = 0;
+    let skippedCount = 0;
+
+    for (const sess of sessions) {
+      if (!canAccessClassOrExam(auth, sess.class_id, sess.exam_id)) {
+        skippedCount++;
+        continue;
+      }
+
+      if (action === 'lock') {
+        if (sess.status === 'submitted' || sess.status === 'expired' || sess.status === 'locked') {
+          skippedCount++;
+          continue;
+        }
+        const reason = cleanNotes || `Sesi dikunci massal oleh ${auth.name}.`;
+        db.prepare(`UPDATE exam_sessions SET status = 'locked', lock_reason = ? WHERE id = ?`).run(reason, sess.id);
+        db.prepare(`
+          INSERT INTO violation_logs (id, session_id, exam_id, student_id, event_type, details_json, occurrence_number, triggered_lock, admin_action, admin_id, action_notes, server_timestamp)
+          VALUES (?, ?, ?, ?, 'penguncian_manual_pengawas', ?, ?, 1, 'LOCK_SESSION', ?, ?, ?)
+        `).run(crypto.randomUUID(), sess.id, sess.exam_id, sess.student_id, JSON.stringify({ bulk: true }), sess.violation_count, auth.userId, reason, nowIso);
+        realtimeHub.sendToStudent(sess.id, { type: 'session:locked', lockReason: reason, timestamp: nowIso });
+        affectedCount++;
+      } else if (action === 'unlock') {
+        if (sess.status !== 'locked' || nowMs >= new Date(sess.server_end_at).getTime()) {
+          skippedCount++;
+          continue;
+        }
+        const reason = cleanNotes || `Dibuka kembali oleh ${auth.name}.`;
+        db.prepare(`UPDATE exam_sessions SET status = 'in_progress', lock_reason = NULL, unlocked_by = ?, unlocked_at = ?, unlock_notes = ? WHERE id = ?`).run(
+          auth.userId,
+          nowIso,
+          reason,
+          sess.id
+        );
+        db.prepare(`
+          INSERT INTO violation_logs (id, session_id, exam_id, student_id, event_type, details_json, occurrence_number, triggered_lock, admin_action, admin_id, action_notes, server_timestamp)
+          VALUES (?, ?, ?, ?, 'pembukaan_kunci_sesi', ?, 0, 0, 'UNLOCK_SESSION', ?, ?, ?)
+        `).run(crypto.randomUUID(), sess.id, sess.exam_id, sess.student_id, JSON.stringify({ bulk: true }), auth.userId, reason, nowIso);
+        realtimeHub.sendToStudent(sess.id, { type: 'session:unlocked', notes: reason, timestamp: nowIso });
+        affectedCount++;
+      } else if (action === 'reset_violations') {
+        const nextStatus = sess.status === 'locked' && nowMs < new Date(sess.server_end_at).getTime() ? 'in_progress' : sess.status;
+        const reason = cleanNotes || `Reset pelanggaran massal oleh ${auth.name}.`;
+        db.prepare(`UPDATE exam_sessions SET violation_count = 0, lock_reason = NULL, status = ?, unlocked_by = ?, unlocked_at = ?, unlock_notes = ? WHERE id = ?`).run(
+          nextStatus,
+          auth.userId,
+          nowIso,
+          reason,
+          sess.id
+        );
+        db.prepare('DELETE FROM login_attempts WHERE identifier = ?').run(`exampin:${sess.student_id}`);
+        realtimeHub.sendToStudent(sess.id, { type: 'session:reset_violations', status: nextStatus, notes: reason, timestamp: nowIso });
+        affectedCount++;
+      } else if (action === 'reset_session') {
+        db.prepare('DELETE FROM exam_sessions WHERE id = ?').run(sess.id);
+        db.prepare('DELETE FROM login_attempts WHERE identifier = ?').run(`exampin:${sess.student_id}`);
+        realtimeHub.sendToStudent(sess.id, { type: 'session:reset_exam', notes: cleanNotes || 'Sesi direset oleh admin/pengawas.', timestamp: nowIso });
+        realtimeHub.sendToStudentAccount(sess.student_id, { type: 'session:reset_exam', examId: sess.exam_id, notes: cleanNotes || 'Sesi direset oleh admin/pengawas.', timestamp: nowIso });
+        affectedCount++;
+      } else if (action === 'extend_time') {
+        if (sess.status === 'submitted' || sess.status === 'expired') {
+          skippedCount++;
+          continue;
+        }
+        const baseMs = Math.max(nowMs, new Date(sess.server_end_at).getTime());
+        const nextEndIso = new Date(baseMs + addMins * 60 * 1000).toISOString();
+        db.prepare('UPDATE exam_sessions SET server_end_at = ? WHERE id = ?').run(nextEndIso, sess.id);
+        realtimeHub.sendToStudent(sess.id, { type: 'session:time_extended', extraMinutes: addMins, serverEndAt: nextEndIso, timestamp: nowIso });
+        affectedCount++;
+      } else if (action === 'force_submit') {
+        if (sess.status === 'submitted' || sess.status === 'expired') {
+          skippedCount++;
+          continue;
+        }
+        finalizeAndGradeSession(sess.id, 'submitted');
+        realtimeHub.sendToStudent(sess.id, { type: 'session:force_submitted' });
+        affectedCount++;
+      }
+    }
+
+    writeAuditLog({
+      actorId: auth.userId,
+      actorRole: auth.role,
+      actorName: auth.name,
+      action: `BULK_MONITOR_${String(action).toUpperCase()}`,
+      targetType: 'exam',
+      targetId: examId,
+      details: { affectedCount, skippedCount, extraMinutes: action === 'extend_time' ? addMins : undefined },
+      ipAddress: req.ip,
+    });
+
+    realtimeHub.queueMonitorUpdate({
+      kind: 'bulk_action',
+      priority: 'high',
+      examId,
+      action,
+      timestamp: nowIso,
+    });
+
+    res.json({ ok: true, affectedCount, skippedCount });
   });
 
   // Review proctoring indicator
@@ -2461,6 +2935,330 @@ export function createApiRouter() {
       details: { deletedCount },
     });
     res.json({ ok: true, deletedCount });
+  });
+
+  // Bulk or targeted student PIN / Token update (all students, specific class, or selected students)
+  router.post('/admin/students/bulk-pin', requireAuth, requireRole(['admin']), (req, res) => {
+    const { scope, classId, studentIds, mode, pinValue } = req.body || {};
+    const cleanScope = scope === 'class' || scope === 'selected' ? scope : 'all';
+    const cleanMode = mode === 'random' ? 'random' : 'custom';
+    const cleanPinValue = String(pinValue || '').trim();
+
+    if (cleanMode === 'custom' && (cleanPinValue.length < 4 || cleanPinValue.length > 32)) {
+      res.status(400).json({ error: 'PIN / Token seragam harus terdiri dari 4 hingga 32 karakter.' });
+      return;
+    }
+
+    let targets: Array<{ id: string; nis: string }> = [];
+    if (cleanScope === 'all') {
+      targets = db.prepare('SELECT id, nis FROM students').all() as Array<{ id: string; nis: string }>;
+    } else if (cleanScope === 'class') {
+      const cleanClassId = String(classId || '').trim();
+      if (!cleanClassId) {
+        res.status(400).json({ error: 'Pilih kelas tujuan terlebih dahulu.' });
+        return;
+      }
+      targets = db.prepare('SELECT id, nis FROM students WHERE class_id = ?').all(cleanClassId) as Array<{ id: string; nis: string }>;
+    } else {
+      const ids = Array.isArray(studentIds) ? (studentIds as string[]).map((id) => String(id).trim()).filter(Boolean) : [];
+      if (ids.length === 0) {
+        res.status(400).json({ error: 'Pilih minimal satu siswa tujuan.' });
+        return;
+      }
+      const placeholders = ids.map(() => '?').join(',');
+      targets = db.prepare(`SELECT id, nis FROM students WHERE id IN (${placeholders})`).all(...ids) as Array<{ id: string; nis: string }>;
+    }
+
+    if (targets.length === 0) {
+      res.status(404).json({ error: 'Tidak ada siswa yang sesuai dengan sasaran pilihan.' });
+      return;
+    }
+
+    const updStmt = db.prepare('UPDATE students SET pin_hash = ?, pin_display = ? WHERE id = ?');
+    const clearAttemptStmt = db.prepare('DELETE FROM login_attempts WHERE identifier = ?');
+    const sharedHash = cleanMode === 'custom' ? bcrypt.hashSync(cleanPinValue, 8) : '';
+
+    const tx = db.transaction(() => {
+      for (const stu of targets) {
+        if (cleanMode === 'custom') {
+          updStmt.run(sharedHash, cleanPinValue, stu.id);
+        } else {
+          const randPin = String(Math.floor(100000 + Math.random() * 900000));
+          updStmt.run(bcrypt.hashSync(randPin, 6), randPin, stu.id);
+        }
+        clearAttemptStmt.run(`exampin:${stu.id}`);
+        clearAttemptStmt.run(`stu:${stu.nis}`);
+      }
+    });
+    tx();
+
+    writeAuditLog({
+      actorId: req.auth!.userId,
+      actorRole: 'admin',
+      actorName: req.auth!.name,
+      action: 'BULK_UPDATE_STUDENT_PIN',
+      targetType: 'student',
+      targetId: cleanScope,
+      details: {
+        scope: cleanScope,
+        classId: classId || null,
+        mode: cleanMode,
+        updatedCount: targets.length,
+      },
+    });
+
+    res.json({ ok: true, updatedCount: targets.length, scope: cleanScope, mode: cleanMode });
+  });
+
+  // Bulk or targeted student account actions (lock account, unlock account, reset access lockouts)
+  router.post('/admin/students/bulk-action', requireAuth, requireRole(['admin']), (req, res) => {
+    const { action, scope, classId, studentIds } = req.body || {};
+    const validActions = ['lock_account', 'unlock_account', 'reset_access'];
+    if (!validActions.includes(action)) {
+      res.status(400).json({ error: 'Aksi akun siswa tidak valid.' });
+      return;
+    }
+
+    const cleanScope = scope === 'class' || scope === 'selected' ? scope : 'all';
+    let targets: Array<{ id: string; nis: string; full_name: string }> = [];
+
+    if (cleanScope === 'all') {
+      targets = db.prepare('SELECT id, nis, full_name FROM students').all() as Array<{ id: string; nis: string; full_name: string }>;
+    } else if (cleanScope === 'class') {
+      const cleanClassId = String(classId || '').trim();
+      if (!cleanClassId) {
+        res.status(400).json({ error: 'Pilih kelas tujuan terlebih dahulu.' });
+        return;
+      }
+      targets = db.prepare('SELECT id, nis, full_name FROM students WHERE class_id = ?').all(cleanClassId) as Array<{ id: string; nis: string; full_name: string }>;
+    } else {
+      const ids = Array.isArray(studentIds) ? (studentIds as string[]).map((id) => String(id).trim()).filter(Boolean) : [];
+      if (ids.length === 0) {
+        res.status(400).json({ error: 'Pilih minimal satu siswa tujuan.' });
+        return;
+      }
+      const placeholders = ids.map(() => '?').join(',');
+      targets = db.prepare(`SELECT id, nis, full_name FROM students WHERE id IN (${placeholders})`).all(...ids) as Array<{ id: string; nis: string; full_name: string }>;
+    }
+
+    if (targets.length === 0) {
+      res.status(404).json({ error: 'Tidak ada siswa yang sesuai dengan sasaran pilihan.' });
+      return;
+    }
+
+    const setStatusStmt = db.prepare('UPDATE students SET is_active = ? WHERE id = ?');
+    const clearAttemptStmt = db.prepare('DELETE FROM login_attempts WHERE identifier = ?');
+
+    const tx = db.transaction(() => {
+      for (const stu of targets) {
+        if (action === 'lock_account') {
+          setStatusStmt.run(0, stu.id);
+        } else {
+          setStatusStmt.run(1, stu.id);
+          clearAttemptStmt.run(`unified:${stu.nis.toLowerCase()}`);
+          clearAttemptStmt.run(`stu:${stu.nis}`);
+          clearAttemptStmt.run(`exampin:${stu.id}`);
+        }
+      }
+    });
+    tx();
+
+    writeAuditLog({
+      actorId: req.auth!.userId,
+      actorRole: req.auth!.role,
+      actorName: req.auth!.name,
+      action: `BULK_STUDENT_${String(action).toUpperCase()}`,
+      targetType: 'student',
+      targetId: cleanScope,
+      details: { action, scope: cleanScope, classId: classId || null, updatedCount: targets.length },
+      ipAddress: req.ip,
+    });
+
+    res.json({ ok: true, action, updatedCount: targets.length });
+  });
+
+  // Send message / notice / kesan from Admin or Pengawas to students (all, class, exam participants, or selected)
+  router.post('/admin/messages/send', requireAuth, requireRole(['admin', 'pengawas']), (req, res) => {
+    const auth = req.auth!;
+    const { scope, classId, studentIds, examId, category, title, message } = req.body || {};
+    const cleanMessage = String(message || '').trim();
+    const cleanTitle = String(title || '').trim().slice(0, 120);
+    const cleanCategory = ['pesan', 'peringatan', 'instruksi', 'kesan'].includes(category) ? category : 'pesan';
+
+    if (!cleanMessage || cleanMessage.length > 1000) {
+      res.status(400).json({ error: 'Isi pesan wajib diisi (maksimal 1.000 karakter).' });
+      return;
+    }
+
+    const cleanScope = ['all', 'class', 'selected', 'exam'].includes(scope) ? scope : 'selected';
+    if (auth.role === 'pengawas' && cleanScope === 'all') {
+      res.status(403).json({ error: 'Pengawas hanya dapat mengirim pesan ke peserta kelas/ujian binaan.' });
+      return;
+    }
+
+    let targets: Array<{ id: string; class_id: string }> = [];
+
+    if (cleanScope === 'all') {
+      targets = db.prepare('SELECT id, class_id FROM students WHERE is_active = 1').all() as Array<{ id: string; class_id: string }>;
+    } else if (cleanScope === 'class') {
+      const cleanClassId = String(classId || '').trim();
+      if (!cleanClassId) {
+        res.status(400).json({ error: 'Pilih kelas tujuan terlebih dahulu.' });
+        return;
+      }
+      if (auth.role === 'pengawas' && !canAccessClassOrExam(auth, cleanClassId, null)) {
+        res.status(403).json({ error: 'Kelas di luar penugasan pengawas.' });
+        return;
+      }
+      targets = db.prepare('SELECT id, class_id FROM students WHERE class_id = ? AND is_active = 1').all(cleanClassId) as Array<{ id: string; class_id: string }>;
+    } else if (cleanScope === 'exam') {
+      const cleanExamId = String(examId || '').trim();
+      const exam = db.prepare('SELECT id, class_ids_json, assigned_student_ids_json FROM exams WHERE id = ?').get(cleanExamId) as
+        | { id: string; class_ids_json: string; assigned_student_ids_json: string }
+        | undefined;
+      if (!exam) {
+        res.status(404).json({ error: 'Ujian tujuan tidak ditemukan.' });
+        return;
+      }
+      const examClassIds = JSON.parse(exam.class_ids_json || '[]') as string[];
+      const assignedStuIds = JSON.parse(exam.assigned_student_ids_json || '[]') as string[];
+      const allActive = db.prepare('SELECT id, class_id FROM students WHERE is_active = 1').all() as Array<{ id: string; class_id: string }>;
+      targets = allActive.filter((s) => {
+        const inExam = examClassIds.includes(s.class_id) || assignedStuIds.includes(s.id);
+        if (!inExam) return false;
+        if (auth.role === 'pengawas' && (auth.assignedClassIds || []).length > 0) {
+          return auth.assignedClassIds!.includes(s.class_id);
+        }
+        return true;
+      });
+    } else {
+      const ids = Array.isArray(studentIds) ? (studentIds as string[]).map((id) => String(id).trim()).filter(Boolean) : [];
+      if (ids.length === 0) {
+        res.status(400).json({ error: 'Pilih minimal satu siswa tujuan.' });
+        return;
+      }
+      const placeholders = ids.map(() => '?').join(',');
+      const found = db.prepare(`SELECT id, class_id FROM students WHERE id IN (${placeholders})`).all(...ids) as Array<{ id: string; class_id: string }>;
+      targets = auth.role === 'pengawas'
+        ? found.filter((s) => canAccessClassOrExam(auth, s.class_id, examId || null))
+        : found;
+    }
+
+    if (targets.length === 0) {
+      res.status(404).json({ error: 'Tidak ada siswa yang sesuai dengan sasaran pilihan.' });
+      return;
+    }
+
+    const nowIso = new Date().toISOString();
+    const cleanExamId = examId ? String(examId).trim() : null;
+    const findSessStmt = cleanExamId
+      ? db.prepare('SELECT id FROM exam_sessions WHERE exam_id = ? AND student_id = ?')
+      : null;
+
+    const insertMsgStmt = db.prepare(`
+      INSERT INTO student_messages (id, student_id, exam_id, session_id, sender_id, sender_role, sender_name, category, title, message, is_read, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+    `);
+    const insertChatStmt = db.prepare(`
+      INSERT INTO chat_messages (id, exam_id, session_id, sender_role, sender_id, sender_name, recipient_student_id, message, is_read, server_timestamp)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+    `);
+
+    const createdPayloads: Array<{ studentId: string; sessionId: string | null; record: Record<string, unknown>; chatRecord?: Record<string, unknown> }> = [];
+
+    const tx = db.transaction(() => {
+      for (const stu of targets) {
+        const msgId = crypto.randomUUID();
+        const sessRow = findSessStmt ? (findSessStmt.get(cleanExamId!, stu.id) as { id: string } | undefined) : undefined;
+        const sessId = sessRow?.id || null;
+
+        insertMsgStmt.run(
+          msgId,
+          stu.id,
+          cleanExamId,
+          sessId,
+          auth.userId,
+          auth.role,
+          auth.name,
+          cleanCategory,
+          cleanTitle,
+          cleanMessage,
+          nowIso
+        );
+
+        let chatRecord: Record<string, unknown> | undefined;
+        if (cleanExamId && sessId) {
+          const chatId = crypto.randomUUID();
+          const chatBody = cleanTitle ? `[${cleanTitle}] ${cleanMessage}` : cleanMessage;
+          insertChatStmt.run(chatId, cleanExamId, sessId, auth.role, auth.userId, auth.name, stu.id, chatBody, nowIso);
+          chatRecord = {
+            id: chatId,
+            exam_id: cleanExamId,
+            session_id: sessId,
+            sender_role: auth.role,
+            sender_id: auth.userId,
+            sender_name: auth.name,
+            recipient_student_id: stu.id,
+            message: chatBody,
+            server_timestamp: nowIso,
+          };
+        }
+
+        createdPayloads.push({
+          studentId: stu.id,
+          sessionId: sessId,
+          record: {
+            id: msgId,
+            student_id: stu.id,
+            exam_id: cleanExamId,
+            session_id: sessId,
+            sender_id: auth.userId,
+            sender_role: auth.role,
+            sender_name: auth.name,
+            category: cleanCategory,
+            title: cleanTitle,
+            message: cleanMessage,
+            is_read: 0,
+            read_at: null,
+            created_at: nowIso,
+          },
+          chatRecord,
+        });
+      }
+    });
+    tx();
+
+    for (const item of createdPayloads) {
+      realtimeHub.sendToStudentAccount(item.studentId, {
+        type: 'student:message',
+        message: item.record,
+      });
+      if (item.sessionId && item.chatRecord) {
+        realtimeHub.sendToStudent(item.sessionId, {
+          type: 'chat:new',
+          message: item.chatRecord,
+        });
+      }
+    }
+
+    writeAuditLog({
+      actorId: auth.userId,
+      actorRole: auth.role,
+      actorName: auth.name,
+      action: 'SEND_STUDENT_MESSAGE',
+      targetType: 'student_message',
+      targetId: cleanScope,
+      details: {
+        scope: cleanScope,
+        category: cleanCategory,
+        title: cleanTitle,
+        sentCount: createdPayloads.length,
+        examId: cleanExamId,
+      },
+      ipAddress: req.ip,
+    });
+
+    res.json({ ok: true, sentCount: createdPayloads.length });
   });
 
   // Student Excel Template, Import Preview, Commit, & Export
@@ -3163,6 +3961,13 @@ export function createApiRouter() {
     const now = new Date().toISOString();
     const weights: ScoringWeights = b.rubricWeights || DEFAULT_SCORING_WEIGHTS;
 
+    const accessTokenMode = b.accessTokenMode === 'exam_token' ? 'exam_token' : 'student_pin';
+    const accessToken = accessTokenMode === 'exam_token' ? String(b.accessToken || '').trim() : '';
+    if (accessTokenMode === 'exam_token' && (accessToken.length < 4 || accessToken.length > 32)) {
+      res.status(400).json({ error: 'Token khusus ujian harus terdiri dari 4 hingga 32 karakter.' });
+      return;
+    }
+
     const tx = db.transaction(() => {
       db.prepare(`
         INSERT INTO exams (
@@ -3170,9 +3975,10 @@ export function createApiRouter() {
           question_bank_id, question_count, shuffle_mode, shuffle_questions, shuffle_options,
           composition_json, duration_minutes, passing_score, max_violations, auto_lock_enabled,
           require_fullscreen, proctoring_enabled, proctoring_sensitivity, proctoring_tolerance,
-          proctoring_retention_days, allow_camera_stream, publication_policy, publish_at, created_by, created_at
+          proctoring_retention_days, allow_camera_stream, publication_policy, publish_at,
+          access_token_mode, access_token, created_by, created_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         examId,
         String(b.title).trim(),
@@ -3198,6 +4004,8 @@ export function createApiRouter() {
         b.allowCameraStream ? 1 : 0,
         b.publicationPolicy || 'view_download_print',
         b.publishAt || null,
+        accessTokenMode,
+        accessToken,
         req.auth!.userId,
         now
       );
@@ -3304,6 +4112,14 @@ export function createApiRouter() {
       return;
     }
 
+    const accessTokenMode =
+      b.accessTokenMode === 'exam_token' ? 'exam_token' : b.accessTokenMode === 'student_pin' ? 'student_pin' : null;
+    const cleanAccessToken = accessTokenMode === 'exam_token' ? String(b.accessToken || '').trim() : accessTokenMode === 'student_pin' ? '' : null;
+    if (accessTokenMode === 'exam_token' && (!cleanAccessToken || cleanAccessToken.length < 4 || cleanAccessToken.length > 32)) {
+      res.status(400).json({ error: 'Token khusus ujian harus terdiri dari 4 hingga 32 karakter.' });
+      return;
+    }
+
     const tx = db.transaction(() => {
       db.prepare(`
         UPDATE exams
@@ -3327,7 +4143,9 @@ export function createApiRouter() {
             proctoring_tolerance = COALESCE(?, proctoring_tolerance),
             proctoring_retention_days = COALESCE(?, proctoring_retention_days),
             allow_camera_stream = COALESCE(?, allow_camera_stream),
-            publication_policy = COALESCE(?, publication_policy)
+            publication_policy = COALESCE(?, publication_policy),
+            access_token_mode = COALESCE(?, access_token_mode),
+            access_token = COALESCE(?, access_token)
         WHERE id = ?
       `).run(
         b.title ? String(b.title).trim() : null,
@@ -3351,6 +4169,8 @@ export function createApiRouter() {
         b.proctoringRetentionDays ? Number(b.proctoringRetentionDays) : null,
         typeof b.allowCameraStream === 'boolean' ? (b.allowCameraStream ? 1 : 0) : null,
         b.publicationPolicy || null,
+        accessTokenMode,
+        cleanAccessToken,
         examId
       );
 
@@ -3396,6 +4216,57 @@ export function createApiRouter() {
       details: { title: b.title },
     });
     res.json({ ok: true });
+  });
+
+  // Bulk exam token/PIN setting (all exams or selected exams)
+  router.post('/admin/exams/bulk-token', requireAuth, requireRole(['admin']), (req, res) => {
+    const { scope, examIds, accessTokenMode, accessToken } = req.body || {};
+    const cleanScope = scope === 'selected' ? 'selected' : 'all';
+    const cleanMode = accessTokenMode === 'exam_token' ? 'exam_token' : 'student_pin';
+    const cleanToken = cleanMode === 'exam_token' ? String(accessToken || '').trim() : '';
+
+    if (cleanMode === 'exam_token' && (cleanToken.length < 4 || cleanToken.length > 32)) {
+      res.status(400).json({ error: 'Token khusus ujian harus terdiri dari 4 hingga 32 karakter.' });
+      return;
+    }
+
+    let targets: Array<{ id: string }> = [];
+    if (cleanScope === 'all') {
+      targets = db.prepare('SELECT id FROM exams').all() as Array<{ id: string }>;
+    } else {
+      const ids = Array.isArray(examIds) ? (examIds as string[]).map((id) => String(id).trim()).filter(Boolean) : [];
+      if (ids.length === 0) {
+        res.status(400).json({ error: 'Pilih minimal satu ujian tujuan.' });
+        return;
+      }
+      const placeholders = ids.map(() => '?').join(',');
+      targets = db.prepare(`SELECT id FROM exams WHERE id IN (${placeholders})`).all(...ids) as Array<{ id: string }>;
+    }
+
+    if (targets.length === 0) {
+      res.status(404).json({ error: 'Tidak ada ujian yang sesuai dengan sasaran pilihan.' });
+      return;
+    }
+
+    const updStmt = db.prepare('UPDATE exams SET access_token_mode = ?, access_token = ? WHERE id = ?');
+    const tx = db.transaction(() => {
+      for (const ex of targets) {
+        updStmt.run(cleanMode, cleanToken, ex.id);
+      }
+    });
+    tx();
+
+    writeAuditLog({
+      actorId: req.auth!.userId,
+      actorRole: 'admin',
+      actorName: req.auth!.name,
+      action: 'BULK_UPDATE_EXAM_TOKEN',
+      targetType: 'exam',
+      targetId: cleanScope,
+      details: { scope: cleanScope, accessTokenMode: cleanMode, updatedCount: targets.length },
+    });
+
+    res.json({ ok: true, updatedCount: targets.length, accessTokenMode: cleanMode });
   });
 
   router.delete('/admin/exams/:examId', requireAuth, requireRole(['admin']), (req, res) => {

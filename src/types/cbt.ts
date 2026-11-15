@@ -62,6 +62,7 @@ export interface StudentExamSummary {
   endAt: string;
   availability: 'upcoming' | 'open' | 'in_progress' | 'locked' | 'completed' | 'missed';
   publicationPolicy: PublicationPolicy;
+  usesExamToken?: boolean;
   session: {
     id: string;
     status: string;
@@ -132,4 +133,20 @@ export interface ChatMessageItem {
   recipient_student_id: string;
   message: string;
   server_timestamp: string;
+}
+
+export interface StudentMessageItem {
+  id: string;
+  student_id: string;
+  exam_id: string | null;
+  session_id: string | null;
+  sender_id: string;
+  sender_role: UserRole;
+  sender_name: string;
+  category: 'pesan' | 'peringatan' | 'instruksi' | 'kesan';
+  title: string;
+  message: string;
+  is_read: number;
+  read_at: string | null;
+  created_at: string;
 }
