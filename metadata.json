@@ -1,0 +1,6 @@
+{
+  "name": "SinarCBT — Platform Ujian Berbasis Komputer Terpadu",
+  "description": "Aplikasi Computer-Based Test (CBT) online lengkap dengan bank soal TKA, penilaian parsial, pengawasan real-time, auto-lock anti-kecurangan, AI proctoring ringan, dan rapor PDF.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
