@@ -126,18 +126,20 @@ export const QuestionBankPanel: React.FC = () => {
   const loadBanks = async () => {
     try {
       const [bRes, sRes] = await Promise.all([
-        apiFetch<{ banks: BankItem[] }>('/api/admin/question-banks'),
-        apiFetch<{ subjects: Array<{ id: string; code: string; name: string }> }>('/api/admin/subjects'),
+        apiFetch<{ banks?: BankItem[] }>('/api/admin/question-banks'),
+        apiFetch<{ subjects?: Array<{ id: string; code: string; name: string }> }>('/api/admin/subjects'),
       ]);
-      setBanks(bRes.banks);
-      setSubjects(sRes.subjects);
-      if ((!selectedBankId || !bRes.banks.some((b) => b.id === selectedBankId)) && bRes.banks[0]) {
-        setSelectedBankId(bRes.banks[0].id);
-      } else if (bRes.banks.length === 0) {
+      const nextBanks = Array.isArray(bRes?.banks) ? bRes.banks : [];
+      const nextSubjects = Array.isArray(sRes?.subjects) ? sRes.subjects : [];
+      setBanks(nextBanks);
+      setSubjects(nextSubjects);
+      if ((!selectedBankId || !nextBanks.some((b) => b.id === selectedBankId)) && nextBanks[0]) {
+        setSelectedBankId(nextBanks[0].id);
+      } else if (nextBanks.length === 0) {
         setSelectedBankId('');
         setQuestions([]);
       }
-      if (!newBankSubId && sRes.subjects[0]) setNewBankSubId(sRes.subjects[0].id);
+      if (!newBankSubId && nextSubjects[0]) setNewBankSubId(nextSubjects[0].id);
     } catch (err) {
       setBanner({ type: 'err', text: err instanceof Error ? err.message : 'Gagal memuat bank soal.' });
     }
@@ -146,9 +148,10 @@ export const QuestionBankPanel: React.FC = () => {
   const loadQuestions = async (bankId: string) => {
     if (!bankId) return;
     try {
-      const res = await apiFetch<{ questions: QuestionRow[] }>(`/api/admin/question-banks/${bankId}/questions`);
-      setQuestions(res.questions);
-      setSelectedQuestionIds((prev) => prev.filter((id) => res.questions.some((q) => q.id === id)));
+      const res = await apiFetch<{ questions?: QuestionRow[] }>(`/api/admin/question-banks/${bankId}/questions`);
+      const nextQuestions = Array.isArray(res?.questions) ? res.questions : [];
+      setQuestions(nextQuestions);
+      setSelectedQuestionIds((prev) => prev.filter((id) => nextQuestions.some((q) => q.id === id)));
     } catch (err) {
       setBanner({ type: 'err', text: err instanceof Error ? err.message : 'Gagal memuat daftar soal.' });
     }

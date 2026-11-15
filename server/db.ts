@@ -135,9 +135,11 @@ export function initDatabase() {
       proctoring_retention_days INTEGER NOT NULL DEFAULT 14,
       allow_camera_stream INTEGER NOT NULL DEFAULT 0,
       publication_policy TEXT NOT NULL CHECK(publication_policy IN ('hidden', 'view_only', 'view_download', 'view_download_print')) DEFAULT 'view_download_print',
+      history_visible INTEGER NOT NULL DEFAULT 1,
       publish_at TEXT,
       access_token_mode TEXT NOT NULL DEFAULT 'student_pin',
       access_token TEXT NOT NULL DEFAULT '',
+      class_configs_json TEXT NOT NULL DEFAULT '{}',
       created_by TEXT REFERENCES users(id),
       created_at TEXT NOT NULL
     );
@@ -369,6 +371,12 @@ export function initDatabase() {
   if (!examCols.some((c) => c.name === 'access_token')) {
     db.exec("ALTER TABLE exams ADD COLUMN access_token TEXT NOT NULL DEFAULT '';");
   }
+  if (!examCols.some((c) => c.name === 'history_visible')) {
+    db.exec('ALTER TABLE exams ADD COLUMN history_visible INTEGER NOT NULL DEFAULT 1;');
+  }
+  if (!examCols.some((c) => c.name === 'class_configs_json')) {
+    db.exec("ALTER TABLE exams ADD COLUMN class_configs_json TEXT NOT NULL DEFAULT '{}';");
+  }
 
   // Idempotent synthetic backfill for seeded demo accounts created before new profile fields existed
   const demoProfileBackfill: Array<[string, string, string, string, string]> = [
@@ -469,6 +477,7 @@ export function seedInitialData() {
       lockoutMinutes: 5,
       defaultProctoringRetentionDays: 14,
       maxConcurrentCameraStreams: 6,
+      showStudentExamHistory: true,
       privacyNotice: 'Kamera pengawasan hanya digunakan untuk indikasi peninjauan pengawas selama ujian berlangsung. Rekaman tidak disimpan permanen melewati masa retensi dan tidak dijadikan bukti tunggal kecurangan.',
     }],
   ];

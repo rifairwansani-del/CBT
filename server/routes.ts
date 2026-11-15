@@ -85,6 +85,138 @@ function getSetting<T>(key: string, fallback: T): T {
   }
 }
 
+interface ClassExamConfigOverride {
+  enabled?: boolean;
+  startAt?: string;
+  entryDeadlineAt?: string;
+  endAt?: string;
+  durationMinutes?: number;
+  accessTokenMode?: 'inherit' | 'student_pin' | 'exam_token';
+  accessToken?: string;
+  publicationPolicy?: string;
+  historyVisible?: 'inherit' | 'visible' | 'hidden';
+}
+
+function parseClassConfigs(raw: unknown): Record<string, ClassExamConfigOverride> {
+  if (!raw) return {};
+  try {
+    const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, ClassExamConfigOverride>;
+    }
+    return {};
+  } catch {
+    return {};
+  }
+}
+
+function sanitizeClassConfigs(input: unknown): { ok: true; configs: Record<string, ClassExamConfigOverride> } | { ok: false; error: string } {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    return { ok: true, configs: {} };
+  }
+  const result: Record<string, ClassExamConfigOverride> = {};
+  for (const [classId, rawCfg] of Object.entries(input as Record<string, unknown>)) {
+    if (!classId || !rawCfg || typeof rawCfg !== 'object') continue;
+    const c = rawCfg as ClassExamConfigOverride;
+    const item: ClassExamConfigOverride = {};
+    if (c.enabled === false) item.enabled = false;
+    else item.enabled = true;
+    if (c.startAt) {
+      const dt = new Date(c.startAt);
+      if (!Number.isNaN(dt.getTime())) item.startAt = dt.toISOString();
+    }
+    if (c.entryDeadlineAt) {
+      const dt = new Date(c.entryDeadlineAt);
+      if (!Number.isNaN(dt.getTime())) item.entryDeadlineAt = dt.toISOString();
+    }
+    if (c.endAt) {
+      const dt = new Date(c.endAt);
+      if (!Number.isNaN(dt.getTime())) item.endAt = dt.toISOString();
+    }
+    if (c.durationMinutes !== undefined && c.durationMinutes !== null && Number(c.durationMinutes) > 0) {
+      item.durationMinutes = Math.max(5, Math.min(360, Number(c.durationMinutes)));
+    }
+    if (c.accessTokenMode === 'student_pin') {
+      item.accessTokenMode = 'student_pin';
+      item.accessToken = '';
+    } else if (c.accessTokenMode === 'exam_token') {
+      const tok = String(c.accessToken || '').trim();
+      if (tok.length < 4 || tok.length > 32) {
+        return { ok: false, error: 'Token khusus per kelas harus terdiri dari 4 hingga 32 karakter.' };
+      }
+      item.accessTokenMode = 'exam_token';
+      item.accessToken = tok;
+    } else {
+      item.accessTokenMode = 'inherit';
+    }
+    if (
+      c.publicationPolicy &&
+      ['hidden', 'view_only', 'view_download', 'view_download_print'].includes(c.publicationPolicy)
+    ) {
+      item.publicationPolicy = c.publicationPolicy;
+    } else {
+      item.publicationPolicy = 'inherit';
+    }
+    if (c.historyVisible === 'visible' || c.historyVisible === 'hidden') {
+      item.historyVisible = c.historyVisible;
+    } else {
+      item.historyVisible = 'inherit';
+    }
+    result[classId] = item;
+  }
+  return { ok: true, configs: result };
+}
+
+function resolveExamConfigForClass(examRow: Record<string, unknown>, classId: string) {
+  const configs = parseClassConfigs(examRow.class_configs_json);
+  const ov = configs[classId] || {};
+  const enabled = ov.enabled !== false;
+  const startAt = ov.startAt || String(examRow.start_at || '');
+  const endAt = ov.endAt || String(examRow.end_at || '');
+  const entryDeadlineAt = ov.entryDeadlineAt || ov.endAt || String(examRow.entry_deadline_at || endAt);
+  const durationMinutes =
+    ov.durationMinutes && Number(ov.durationMinutes) > 0
+      ? Number(ov.durationMinutes)
+      : Number(examRow.duration_minutes || 60);
+
+  let accessTokenMode: 'student_pin' | 'exam_token' =
+    examRow.access_token_mode === 'exam_token' ? 'exam_token' : 'student_pin';
+  let accessToken = accessTokenMode === 'exam_token' ? String(examRow.access_token || '').trim() : '';
+
+  if (ov.accessTokenMode === 'student_pin') {
+    accessTokenMode = 'student_pin';
+    accessToken = '';
+  } else if (ov.accessTokenMode === 'exam_token') {
+    accessTokenMode = 'exam_token';
+    accessToken = String(ov.accessToken || '').trim();
+  }
+
+  const publicationPolicy =
+    ov.publicationPolicy && ov.publicationPolicy !== 'inherit'
+      ? String(ov.publicationPolicy)
+      : String(examRow.publication_policy || 'view_download_print');
+
+  const historyVisible =
+    ov.historyVisible === 'visible'
+      ? true
+      : ov.historyVisible === 'hidden'
+      ? false
+      : Number(examRow.history_visible ?? 1) !== 0;
+
+  return {
+    enabled,
+    startAt,
+    entryDeadlineAt,
+    endAt,
+    durationMinutes,
+    accessTokenMode,
+    accessToken,
+    usesExamToken: accessTokenMode === 'exam_token' && Boolean(accessToken),
+    publicationPolicy,
+    historyVisible,
+  };
+}
+
 function finalizeAndGradeSession(sessionId: string, finalStatus: 'submitted' | 'expired') {
   const session = db.prepare('SELECT * FROM exam_sessions WHERE id = ?').get(sessionId) as {
     id: string;
@@ -215,11 +347,16 @@ export function createApiRouter() {
       logoEndpoint: '/api/branding/logo',
       academicYear: '2026/2027',
     });
-    const sec = getSetting('security', {
+    const secRaw = getSetting<Record<string, unknown>>('security', {
       privacyNotice: 'Kamera pengawasan hanya menghasilkan indikator peninjauan.',
       defaultProctoringRetentionDays: 14,
       maxConcurrentCameraStreams: 6,
+      showStudentExamHistory: true,
     });
+    const sec = {
+      ...secRaw,
+      showStudentExamHistory: secRaw.showStudentExamHistory !== false,
+    };
     res.json({ institution: inst, security: sec });
   });
 
@@ -810,9 +947,13 @@ export function createApiRouter() {
       })
       .map((e) => {
         const sess = sessionByExam.get(e.id);
-        const startMs = new Date(e.start_at).getTime();
-        const deadlineMs = new Date(e.entry_deadline_at).getTime();
-        const endMs = new Date(e.end_at).getTime();
+        const clsCfg = resolveExamConfigForClass(e, classId);
+        if (!clsCfg.enabled && !sess) {
+          return null;
+        }
+        const startMs = new Date(clsCfg.startAt).getTime();
+        const deadlineMs = new Date(clsCfg.entryDeadlineAt).getTime();
+        const endMs = new Date(clsCfg.endAt).getTime();
 
         let availability: 'upcoming' | 'open' | 'in_progress' | 'locked' | 'completed' | 'missed' = 'upcoming';
         if (sess) {
@@ -827,9 +968,9 @@ export function createApiRouter() {
           availability = 'missed';
         }
 
-        // Enforce backend publication policy!
+        // Enforce backend publication policy (including per-class override)!
         const publishAtMs = e.publish_at ? new Date(e.publish_at).getTime() : 0;
-        const isPublished = e.publication_policy !== 'hidden' && (!e.publish_at || nowMs >= publishAtMs);
+        const isPublished = clsCfg.publicationPolicy !== 'hidden' && (!e.publish_at || nowMs >= publishAtMs);
 
         return {
           id: e.id,
@@ -837,7 +978,7 @@ export function createApiRouter() {
           examType: e.exam_type,
           subjectName: e.subject_name,
           subjectCode: e.subject_code,
-          durationMinutes: e.duration_minutes,
+          durationMinutes: clsCfg.durationMinutes,
           questionCount: e.question_count,
           passingScore: e.passing_score,
           autoLockEnabled: Boolean(e.auto_lock_enabled),
@@ -846,12 +987,13 @@ export function createApiRouter() {
           proctoringEnabled: Boolean(e.proctoring_enabled),
           allowCameraStream: Boolean(e.allow_camera_stream),
           timezone: e.timezone,
-          startAt: e.start_at,
-          entryDeadlineAt: e.entry_deadline_at,
-          endAt: e.end_at,
+          startAt: clsCfg.startAt,
+          entryDeadlineAt: clsCfg.entryDeadlineAt,
+          endAt: clsCfg.endAt,
           availability,
-          publicationPolicy: isPublished ? e.publication_policy : 'hidden',
-          usesExamToken: e.access_token_mode === 'exam_token' && Boolean(String(e.access_token || '').trim()),
+          publicationPolicy: isPublished ? clsCfg.publicationPolicy : 'hidden',
+          historyVisible: clsCfg.historyVisible,
+          usesExamToken: clsCfg.usesExamToken,
           session: sess
             ? {
                 id: sess.id,
@@ -878,11 +1020,22 @@ export function createApiRouter() {
                 }
               : null,
         };
-      });
+      })
+      .filter((item): item is NonNullable<typeof item> => Boolean(item));
+
+    const secSetting = getSetting<{ showStudentExamHistory?: boolean }>('security', { showStudentExamHistory: true });
+    const showStudentHistory = secSetting.showStudentExamHistory !== false;
+    const finalExams = showStudentHistory
+      ? visibleExams.filter((e) => {
+          const isHistoryExam = e.availability === 'completed' || e.availability === 'missed';
+          return !isHistoryExam || e.historyVisible !== false;
+        })
+      : visibleExams.filter((e) => e.availability !== 'completed' && e.availability !== 'missed');
 
     res.json({
       serverTime: new Date().toISOString(),
-      exams: visibleExams,
+      showStudentHistory,
+      exams: finalExams,
     });
   });
 
@@ -947,6 +1100,12 @@ export function createApiRouter() {
       return;
     }
 
+    const clsCfg = resolveExamConfigForClass(exam, auth.classId!);
+    if (!clsCfg.enabled) {
+      res.status(403).json({ error: 'Ujian saat ini dinonaktifkan untuk kelas Anda.' });
+      return;
+    }
+
     // Verify exam access token or student exam PIN with brute-force protection
     const pinAttemptKey = `exampin:${studentId}`;
     const pinAttempt = db.prepare('SELECT * FROM login_attempts WHERE identifier = ?').get(pinAttemptKey) as
@@ -970,9 +1129,9 @@ export function createApiRouter() {
       return;
     }
 
-    const usesExamToken = exam.access_token_mode === 'exam_token' && Boolean(String(exam.access_token || '').trim());
+    const usesExamToken = clsCfg.usesExamToken;
     const tokenValid = usesExamToken
-      ? cleanPin === String(exam.access_token || '').trim()
+      ? cleanPin === clsCfg.accessToken
       : bcrypt.compareSync(cleanPin, studentRecord.pin_hash);
 
     if (!tokenValid) {
@@ -1012,15 +1171,15 @@ export function createApiRouter() {
       | undefined;
 
     if (!session) {
-      // Verify schedule window before creating new session
-      const startMs = new Date(exam.start_at).getTime();
-      const deadlineMs = new Date(exam.entry_deadline_at).getTime();
+      // Verify schedule window (with per-class override) before creating new session
+      const startMs = new Date(clsCfg.startAt).getTime();
+      const deadlineMs = new Date(clsCfg.entryDeadlineAt).getTime();
       if (nowMs < startMs) {
-        res.status(403).json({ error: 'Ujian belum dimulai sesuai jadwal server.' });
+        res.status(403).json({ error: 'Ujian belum dimulai sesuai jadwal kelas Anda.' });
         return;
       }
       if (nowMs > deadlineMs) {
-        res.status(403).json({ error: 'Batas akhir masuk ujian telah terlewati.' });
+        res.status(403).json({ error: 'Batas akhir masuk ujian untuk kelas Anda telah terlewati.' });
         return;
       }
 
@@ -1051,8 +1210,8 @@ export function createApiRouter() {
         rubricWeights,
       });
 
-      const scheduleEndMs = new Date(exam.end_at).getTime();
-      const durationEndMs = nowMs + exam.duration_minutes * 60 * 1000;
+      const scheduleEndMs = new Date(clsCfg.endAt).getTime();
+      const durationEndMs = nowMs + clsCfg.durationMinutes * 60 * 1000;
       const effectiveEndMs = Math.min(scheduleEndMs, durationEndMs);
 
       const sessId = `ses_${crypto.randomUUID().slice(0, 12)}`;
@@ -1577,8 +1736,15 @@ export function createApiRouter() {
       return;
     }
 
+    const clsCfg = resolveExamConfigForClass(exam, auth.classId || '');
+    const secSetting = getSetting<{ showStudentExamHistory?: boolean }>('security', { showStudentExamHistory: true });
+    if (secSetting.showStudentExamHistory === false || !clsCfg.historyVisible) {
+      res.status(403).json({ error: 'Riwayat dan hasil ujian untuk tes ini disembunyikan oleh admin.' });
+      return;
+    }
+
     const publishAtMs = exam.publish_at ? new Date(exam.publish_at).getTime() : 0;
-    if (exam.publication_policy === 'hidden' || (exam.publish_at && Date.now() < publishAtMs)) {
+    if (clsCfg.publicationPolicy === 'hidden' || (exam.publish_at && Date.now() < publishAtMs)) {
       res.status(403).json({ error: 'Hasil ujian belum dipublikasikan oleh admin.' });
       return;
     }
@@ -1598,7 +1764,7 @@ export function createApiRouter() {
     }
 
     res.json({
-      policy: exam.publication_policy,
+      policy: clsCfg.publicationPolicy,
       exam: {
         id: exam.id,
         title: exam.title,
@@ -3083,7 +3249,7 @@ export function createApiRouter() {
     const { scope, classId, studentIds, examId, category, title, message } = req.body || {};
     const cleanMessage = String(message || '').trim();
     const cleanTitle = String(title || '').trim().slice(0, 120);
-    const cleanCategory = ['pesan', 'peringatan', 'instruksi', 'kesan'].includes(category) ? category : 'pesan';
+    const cleanCategory = ['pesan', 'pengumuman', 'peringatan', 'instruksi', 'kesan'].includes(category) ? category : 'pesan';
 
     if (!cleanMessage || cleanMessage.length > 1000) {
       res.status(400).json({ error: 'Isi pesan wajib diisi (maksimal 1.000 karakter).' });
@@ -3968,6 +4134,12 @@ export function createApiRouter() {
       return;
     }
 
+    const sanitizedClassConfigs = sanitizeClassConfigs(b.classConfigs);
+    if (!sanitizedClassConfigs.ok) {
+      res.status(400).json({ error: sanitizedClassConfigs.error });
+      return;
+    }
+
     const tx = db.transaction(() => {
       db.prepare(`
         INSERT INTO exams (
@@ -3975,10 +4147,10 @@ export function createApiRouter() {
           question_bank_id, question_count, shuffle_mode, shuffle_questions, shuffle_options,
           composition_json, duration_minutes, passing_score, max_violations, auto_lock_enabled,
           require_fullscreen, proctoring_enabled, proctoring_sensitivity, proctoring_tolerance,
-          proctoring_retention_days, allow_camera_stream, publication_policy, publish_at,
-          access_token_mode, access_token, created_by, created_at
+          proctoring_retention_days, allow_camera_stream, publication_policy, history_visible, publish_at,
+          access_token_mode, access_token, class_configs_json, created_by, created_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         examId,
         String(b.title).trim(),
@@ -4003,9 +4175,11 @@ export function createApiRouter() {
         Number(b.proctoringRetentionDays || 14),
         b.allowCameraStream ? 1 : 0,
         b.publicationPolicy || 'view_download_print',
+        b.historyVisible === false ? 0 : 1,
         b.publishAt || null,
         accessTokenMode,
         accessToken,
+        JSON.stringify(sanitizedClassConfigs.configs),
         req.auth!.userId,
         now
       );
@@ -4064,16 +4238,25 @@ export function createApiRouter() {
       details: { title: b.title, shuffleMode: b.shuffleMode },
     });
 
+    realtimeHub.broadcastToStudents({
+      type: 'exam:schedule_updated',
+      examId,
+      title: String(b.title || '').trim(),
+      action: 'created',
+      timestamp: new Date().toISOString(),
+    });
+
     res.json({ ok: true, id: examId });
   });
 
   router.patch('/admin/exams/:examId/policy', requireAuth, requireRole(['admin']), (req, res) => {
     const { examId } = req.params;
-    const { publicationPolicy, publishAt, autoLockEnabled, maxViolations, proctoringEnabled, allowCameraStream } = req.body || {};
+    const { publicationPolicy, historyVisible, publishAt, autoLockEnabled, maxViolations, proctoringEnabled, allowCameraStream } = req.body || {};
 
     db.prepare(`
       UPDATE exams
       SET publication_policy = COALESCE(?, publication_policy),
+          history_visible = COALESCE(?, history_visible),
           publish_at = ?,
           auto_lock_enabled = COALESCE(?, auto_lock_enabled),
           max_violations = COALESCE(?, max_violations),
@@ -4082,6 +4265,7 @@ export function createApiRouter() {
       WHERE id = ?
     `).run(
       publicationPolicy || null,
+      typeof historyVisible === 'boolean' ? (historyVisible ? 1 : 0) : null,
       publishAt !== undefined ? publishAt : null,
       typeof autoLockEnabled === 'boolean' ? (autoLockEnabled ? 1 : 0) : null,
       maxViolations ? Number(maxViolations) : null,
@@ -4097,10 +4281,64 @@ export function createApiRouter() {
       action: 'UPDATE_EXAM_POLICY',
       targetType: 'exam',
       targetId: examId,
-      details: { publicationPolicy, publishAt, autoLockEnabled, proctoringEnabled },
+      details: { publicationPolicy, historyVisible, publishAt, autoLockEnabled, proctoringEnabled },
+    });
+
+    realtimeHub.broadcastToStudents({
+      type: 'exam:schedule_updated',
+      examId,
+      action: 'policy_updated',
+      timestamp: new Date().toISOString(),
     });
 
     res.json({ ok: true });
+  });
+
+  router.put('/admin/exams/:examId/class-configs', requireAuth, requireRole(['admin']), (req, res) => {
+    const { examId } = req.params;
+    const { classIds, classConfigs } = req.body || {};
+    const existing = db.prepare('SELECT id, title FROM exams WHERE id = ?').get(examId) as { id: string; title: string } | undefined;
+    if (!existing) {
+      res.status(404).json({ error: 'Ujian tidak ditemukan.' });
+      return;
+    }
+
+    const sanitized = sanitizeClassConfigs(classConfigs);
+    if (!sanitized.ok) {
+      res.status(400).json({ error: sanitized.error });
+      return;
+    }
+
+    db.prepare(`
+      UPDATE exams
+      SET class_ids_json = COALESCE(?, class_ids_json),
+          class_configs_json = ?
+      WHERE id = ?
+    `).run(
+      Array.isArray(classIds) ? JSON.stringify(classIds) : null,
+      JSON.stringify(sanitized.configs),
+      examId
+    );
+
+    writeAuditLog({
+      actorId: req.auth!.userId,
+      actorRole: 'admin',
+      actorName: req.auth!.name,
+      action: 'UPDATE_EXAM_CLASS_CONFIGS',
+      targetType: 'exam',
+      targetId: examId,
+      details: { classIds, configuredClasses: Object.keys(sanitized.configs) },
+    });
+
+    realtimeHub.broadcastToStudents({
+      type: 'exam:schedule_updated',
+      examId,
+      title: existing.title,
+      action: 'class_schedule_updated',
+      timestamp: new Date().toISOString(),
+    });
+
+    res.json({ ok: true, classConfigs: sanitized.configs });
   });
 
   router.put('/admin/exams/:examId', requireAuth, requireRole(['admin']), (req, res) => {
@@ -4118,6 +4356,16 @@ export function createApiRouter() {
     if (accessTokenMode === 'exam_token' && (!cleanAccessToken || cleanAccessToken.length < 4 || cleanAccessToken.length > 32)) {
       res.status(400).json({ error: 'Token khusus ujian harus terdiri dari 4 hingga 32 karakter.' });
       return;
+    }
+
+    let classConfigsJsonToSave: string | null = null;
+    if (b.classConfigs !== undefined) {
+      const sanitizedClassConfigs = sanitizeClassConfigs(b.classConfigs);
+      if (!sanitizedClassConfigs.ok) {
+        res.status(400).json({ error: sanitizedClassConfigs.error });
+        return;
+      }
+      classConfigsJsonToSave = JSON.stringify(sanitizedClassConfigs.configs);
     }
 
     const tx = db.transaction(() => {
@@ -4144,8 +4392,10 @@ export function createApiRouter() {
             proctoring_retention_days = COALESCE(?, proctoring_retention_days),
             allow_camera_stream = COALESCE(?, allow_camera_stream),
             publication_policy = COALESCE(?, publication_policy),
+            history_visible = COALESCE(?, history_visible),
             access_token_mode = COALESCE(?, access_token_mode),
-            access_token = COALESCE(?, access_token)
+            access_token = COALESCE(?, access_token),
+            class_configs_json = COALESCE(?, class_configs_json)
         WHERE id = ?
       `).run(
         b.title ? String(b.title).trim() : null,
@@ -4169,8 +4419,10 @@ export function createApiRouter() {
         b.proctoringRetentionDays ? Number(b.proctoringRetentionDays) : null,
         typeof b.allowCameraStream === 'boolean' ? (b.allowCameraStream ? 1 : 0) : null,
         b.publicationPolicy || null,
+        typeof b.historyVisible === 'boolean' ? (b.historyVisible ? 1 : 0) : null,
         accessTokenMode,
         cleanAccessToken,
+        classConfigsJsonToSave,
         examId
       );
 
@@ -4215,6 +4467,14 @@ export function createApiRouter() {
       targetId: examId,
       details: { title: b.title },
     });
+    realtimeHub.broadcastToStudents({
+      type: 'exam:schedule_updated',
+      examId,
+      title: b.title ? String(b.title).trim() : undefined,
+      action: 'updated',
+      timestamp: new Date().toISOString(),
+    });
+
     res.json({ ok: true });
   });
 
@@ -4777,8 +5037,12 @@ export function createApiRouter() {
       );
     }
     if (security) {
+      const normalizedSecurity = {
+        ...security,
+        showStudentExamHistory: security.showStudentExamHistory !== false,
+      };
       db.prepare(`INSERT INTO system_settings (key, value_json, updated_at) VALUES ('security', ?, ?) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`).run(
-        JSON.stringify(security),
+        JSON.stringify(normalizedSecurity),
         now
       );
     }
@@ -4791,6 +5055,36 @@ export function createApiRouter() {
       targetId: 'global',
     });
     res.json({ ok: true });
+  });
+
+  router.patch('/admin/settings/student-history', requireAuth, requireRole(['admin']), (req, res) => {
+    const visible = req.body?.visible !== false;
+    const now = new Date().toISOString();
+    const currentSec = getSetting<Record<string, unknown>>('security', {
+      maxLoginAttempts: 5,
+      lockoutMinutes: 5,
+      defaultProctoringRetentionDays: 14,
+      maxConcurrentCameraStreams: 6,
+      privacyNotice: 'Kamera pengawasan hanya menghasilkan indikator peninjauan.',
+    });
+    const updatedSec = {
+      ...currentSec,
+      showStudentExamHistory: visible,
+    };
+    db.prepare(`INSERT INTO system_settings (key, value_json, updated_at) VALUES ('security', ?, ?) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`).run(
+      JSON.stringify(updatedSec),
+      now
+    );
+    writeAuditLog({
+      actorId: req.auth!.userId,
+      actorRole: 'admin',
+      actorName: req.auth!.name,
+      action: 'TOGGLE_STUDENT_HISTORY_VISIBILITY',
+      targetType: 'system_settings',
+      targetId: 'security',
+      details: { showStudentExamHistory: visible },
+    });
+    res.json({ ok: true, showStudentExamHistory: visible });
   });
 
   router.post('/admin/branding/logo', requireAuth, requireRole(['admin']), uploadMemory.single('logo'), (req, res) => {

@@ -70,6 +70,7 @@ export const SystemSettingsAndAuditPanel: React.FC<{
     lockoutMinutes: 5,
     defaultProctoringRetentionDays: 14,
     maxConcurrentCameraStreams: 6,
+    showStudentExamHistory: true,
     privacyNotice: '',
   });
 
@@ -125,7 +126,10 @@ export const SystemSettingsAndAuditPanel: React.FC<{
         apiFetch<{ logs: Array<Record<string, unknown>> }>('/api/admin/audit-logs'),
       ]);
       setInstForm(bRes.institution);
-      setSecForm(bRes.security);
+      setSecForm({
+        ...bRes.security,
+        showStudentExamHistory: bRes.security?.showStudentExamHistory !== false,
+      });
       setStaff(stRes.staff);
       setClasses(clRes.classes);
       setViolationLogs(vlRes.logs);
@@ -427,6 +431,20 @@ export const SystemSettingsAndAuditPanel: React.FC<{
               <label className="block text-xs font-semibold text-slate-700 mb-1">Pemberitahuan Privasi Peserta</label>
               <textarea rows={2} value={secForm.privacyNotice} onChange={(e) => setSecForm({ ...secForm, privacyNotice: e.target.value })} className="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs" />
             </div>
+            <label className="flex items-start gap-2.5 p-3.5 rounded-xl bg-indigo-50/70 border border-indigo-200 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={secForm.showStudentExamHistory !== false}
+                onChange={(e) => setSecForm({ ...secForm, showStudentExamHistory: e.target.checked })}
+                className="mt-0.5 w-4 h-4 rounded border-slate-300"
+              />
+              <div>
+                <p className="text-xs font-bold text-indigo-950">Tampilkan Menu &ldquo;Riwayat &amp; Hasil Ujian&rdquo; di Portal Siswa</p>
+                <p className="text-[11px] text-slate-600 mt-0.5">
+                  Jika dinonaktifkan, tab Cek Nilai &amp; Rapor, kotak Riwayat Nilai, dan daftar riwayat ujian selesai akan disembunyikan dari seluruh siswa.
+                </p>
+              </div>
+            </label>
           </div>
 
           <div className="flex flex-wrap items-center justify-between gap-3 pt-2">

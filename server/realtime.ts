@@ -236,6 +236,17 @@ class RealtimeHub {
     }
   }
 
+  broadcastToStudents(payload: Record<string, unknown>) {
+    const data = JSON.stringify(payload);
+    for (const clients of this.studentAccounts.values()) {
+      for (const client of clients) {
+        if (client.ws.readyState === WebSocket.OPEN) {
+          client.ws.send(data);
+        }
+      }
+    }
+  }
+
   broadcastToAdmins(payload: Record<string, unknown>) {
     const data = JSON.stringify(payload);
     for (const admin of this.adminClients) {

@@ -4,6 +4,18 @@ export type DifficultyLevel = 'mudah' | 'sedang' | 'sulit';
 export type ShuffleMode = 'A' | 'B' | 'C';
 export type PublicationPolicy = 'hidden' | 'view_only' | 'view_download' | 'view_download_print';
 
+export interface ClassExamConfigOverride {
+  enabled?: boolean;
+  startAt?: string;
+  entryDeadlineAt?: string;
+  endAt?: string;
+  durationMinutes?: number;
+  accessTokenMode?: 'inherit' | 'student_pin' | 'exam_token';
+  accessToken?: string;
+  publicationPolicy?: PublicationPolicy | 'inherit';
+  historyVisible?: 'inherit' | 'visible' | 'hidden';
+}
+
 export interface InstitutionBranding {
   name: string;
   shortName: string;
@@ -18,6 +30,7 @@ export interface SecuritySettings {
   lockoutMinutes: number;
   defaultProctoringRetentionDays: number;
   maxConcurrentCameraStreams: number;
+  showStudentExamHistory?: boolean;
   privacyNotice: string;
 }
 
@@ -143,7 +156,7 @@ export interface StudentMessageItem {
   sender_id: string;
   sender_role: UserRole;
   sender_name: string;
-  category: 'pesan' | 'peringatan' | 'instruksi' | 'kesan';
+  category: 'pesan' | 'pengumuman' | 'peringatan' | 'instruksi' | 'kesan';
   title: string;
   message: string;
   is_read: number;

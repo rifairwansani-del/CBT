@@ -5,15 +5,18 @@ import {
   CheckCircle2,
   Download,
   Edit3,
+  Eye,
+  EyeOff,
   FileSpreadsheet,
   KeyRound,
+  Layers,
   Plus,
   Settings2,
   Trash2,
 } from 'lucide-react';
 import { apiFetch, withAuthTokenUrl } from '../../lib/api.ts';
 import { ConfirmDialog } from './ConfirmDialog.tsx';
-import type { PublicationPolicy, ShuffleMode } from '../../types/cbt.ts';
+import type { ClassExamConfigOverride, PublicationPolicy, ShuffleMode } from '../../types/cbt.ts';
 
 interface ExamItem {
   id: string;
@@ -40,8 +43,10 @@ interface ExamItem {
   proctoring_retention_days: number;
   allow_camera_stream: number;
   publication_policy: PublicationPolicy;
+  history_visible?: number;
   access_token_mode?: 'student_pin' | 'exam_token';
   access_token?: string;
+  class_configs_json?: string;
   timezone: string;
   start_at: string;
   entry_deadline_at: string;
@@ -75,6 +80,28 @@ function toLocalDateTimeInput(isoStr?: string | null, fallbackOffsetHours = 0): 
   return new Date(dt.getTime() - dt.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
 }
 
+function parseClassConfigsSafe(raw?: string | null): Record<string, ClassExamConfigOverride> {
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, ClassExamConfigOverride>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function parseClassIdsSafe(raw?: string | null): string[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
 export const ExamsAndSchedulesPanel: React.FC = () => {
   const [exams, setExams] = useState<ExamItem[]>([]);
   const [classes, setClasses] = useState<Array<{ id: string; name: string }>>([]);
@@ -89,6 +116,11 @@ export const ExamsAndSchedulesPanel: React.FC = () => {
   const [bulkTokenMode, setBulkTokenMode] = useState<'student_pin' | 'exam_token'>('exam_token');
   const [bulkTokenValue, setBulkTokenValue] = useState('TKA2026');
   const [busy, setBusy] = useState(false);
+  const [showStudentHistory, setShowStudentHistory] = useState(true);
+  const [togglingHistory, setTogglingHistory] = useState(false);
+  const [classConfigModalExam, setClassConfigModalExam] = useState<ExamItem | null>(null);
+  const [modalClassIds, setModalClassIds] = useState<string[]>([]);
+  const [modalClassConfigs, setModalClassConfigs] = useState<Record<string, ClassExamConfigOverride>>({});
   const [banner, setBanner] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   const [confirmState, setConfirmState] = useState<{
     title: string;
@@ -98,9 +130,9 @@ export const ExamsAndSchedulesPanel: React.FC = () => {
   } | null>(null);
 
   const buildDefaultForm = (
-    subId = subjects[0]?.id || '',
-    bankId = banks[0]?.id || '',
-    clsIds = classes.slice(0, 2).map((c) => c.id)
+    subId = (Array.isArray(subjects) ? subjects[0]?.id : undefined) || '',
+    bankId = (Array.isArray(banks) ? banks[0]?.id : undefined) || '',
+    clsIds = (Array.isArray(classes) ? classes : []).slice(0, 2).map((c) => c.id)
   ) => ({
     title: '',
     examType: 'Simulasi TKA',
@@ -128,6 +160,7 @@ export const ExamsAndSchedulesPanel: React.FC = () => {
     proctoringRetentionDays: 14,
     allowCameraStream: false,
     publicationPolicy: 'view_download_print' as PublicationPolicy,
+    historyVisible: true,
     accessTokenMode: 'student_pin' as 'student_pin' | 'exam_token',
     accessToken: '',
     weights: {
@@ -149,22 +182,34 @@ export const ExamsAndSchedulesPanel: React.FC = () => {
 
   const loadData = async () => {
     try {
-      const [eRes, cRes, sRes, bRes] = await Promise.all([
-        apiFetch<{ exams: ExamItem[] }>('/api/admin/exams'),
-        apiFetch<{ classes: Array<{ id: string; name: string }> }>('/api/admin/classes'),
-        apiFetch<{ subjects: Array<{ id: string; name: string }> }>('/api/admin/subjects'),
-        apiFetch<{ banks: Array<{ id: string; name: string; question_count: number; active_question_count?: number }> }>('/api/admin/question-banks'),
+      const [eRes, cRes, sRes, bRes, brandRes] = await Promise.all([
+        apiFetch<{ exams?: ExamItem[] }>('/api/admin/exams'),
+        apiFetch<{ classes?: Array<{ id: string; name: string }> }>('/api/admin/classes'),
+        apiFetch<{ subjects?: Array<{ id: string; name: string }> }>('/api/admin/subjects'),
+        apiFetch<{ banks?: Array<{ id: string; name: string; question_count: number; active_question_count?: number }> }>('/api/admin/question-banks'),
+        apiFetch<{ security?: { showStudentExamHistory?: boolean } }>('/api/branding').catch(() => null),
       ]);
-      setExams(eRes.exams);
-      setClasses(cRes.classes);
-      setSubjects(sRes.subjects);
-      setBanks(bRes.banks);
-      setSelectedExamIds((prev) => prev.filter((id) => eRes.exams.some((e) => e.id === id)));
+      const nextExams = Array.isArray(eRes?.exams) ? eRes.exams : [];
+      const nextClasses = Array.isArray(cRes?.classes) ? cRes.classes : [];
+      const nextSubjects = Array.isArray(sRes?.subjects) ? sRes.subjects : [];
+      const nextBanks = Array.isArray(bRes?.banks) ? bRes.banks : [];
+
+      if (brandRes?.security) {
+        setShowStudentHistory(brandRes.security.showStudentExamHistory !== false);
+      }
+
+      setExams(nextExams);
+      setClasses(nextClasses);
+      setSubjects(nextSubjects);
+      setBanks(nextBanks);
+      setSelectedExamIds((prev) => prev.filter((id) => nextExams.some((e) => e.id === id)));
       setForm((prev) => ({
         ...prev,
-        subjectId: prev.subjectId || sRes.subjects[0]?.id || '',
-        questionBankId: prev.questionBankId || bRes.banks[0]?.id || '',
-        classIds: prev.classIds.length > 0 ? prev.classIds : cRes.classes.slice(0, 2).map((c) => c.id),
+        subjectId: prev.subjectId || nextSubjects[0]?.id || '',
+        questionBankId: prev.questionBankId || nextBanks[0]?.id || '',
+        classIds: Array.isArray(prev.classIds) && prev.classIds.length > 0
+          ? prev.classIds
+          : nextClasses.slice(0, 2).map((c) => c.id),
       }));
     } catch (err) {
       setBanner({ type: 'err', text: err instanceof Error ? err.message : 'Gagal memuat data ujian dan jadwal.' });
@@ -199,7 +244,8 @@ export const ExamsAndSchedulesPanel: React.FC = () => {
       menjodohkan: 1,
     };
     try {
-      parsedClasses = JSON.parse(ex.class_ids_json || '[]');
+      const rawClasses = JSON.parse(ex.class_ids_json || '[]');
+      parsedClasses = Array.isArray(rawClasses) ? rawClasses : [];
     } catch {
       parsedClasses = [];
     }
@@ -241,6 +287,7 @@ export const ExamsAndSchedulesPanel: React.FC = () => {
       proctoringRetentionDays: ex.proctoring_retention_days || 14,
       allowCameraStream: Boolean(ex.allow_camera_stream),
       publicationPolicy: ex.publication_policy,
+      historyVisible: ex.history_visible !== 0,
       accessTokenMode: ex.access_token_mode === 'exam_token' ? 'exam_token' : 'student_pin',
       accessToken: ex.access_token || '',
       weights: parsedWeights,
@@ -293,6 +340,25 @@ export const ExamsAndSchedulesPanel: React.FC = () => {
       await loadData();
     } catch (err) {
       setBanner({ type: 'err', text: err instanceof Error ? err.message : 'Gagal memperbarui kebijakan.' });
+    }
+  };
+
+  const handleToggleExamHistory = async (exam: ExamItem) => {
+    const nextVisible = exam.history_visible === 0;
+    try {
+      await apiFetch(`/api/admin/exams/${exam.id}/policy`, {
+        method: 'PATCH',
+        body: JSON.stringify({ historyVisible: nextVisible }),
+      });
+      setBanner({
+        type: 'ok',
+        text: nextVisible
+          ? `Riwayat & hasil ujian "${exam.title}" kini terlihat oleh siswa.`
+          : `Riwayat & hasil ujian "${exam.title}" kini disembunyikan dari siswa.`,
+      });
+      await loadData();
+    } catch (err) {
+      setBanner({ type: 'err', text: err instanceof Error ? err.message : 'Gagal mengubah visibilitas riwayat ujian.' });
     }
   };
 
@@ -393,6 +459,78 @@ export const ExamsAndSchedulesPanel: React.FC = () => {
     }
   };
 
+  const openClassConfigModal = (ex: ExamItem) => {
+    const cIds = parseClassIdsSafe(ex.class_ids_json);
+    const rawConfigs = parseClassConfigsSafe(ex.class_configs_json);
+    const formatted: Record<string, ClassExamConfigOverride> = {};
+    for (const [cid, cfg] of Object.entries(rawConfigs)) {
+      formatted[cid] = {
+        ...cfg,
+        startAt: cfg.startAt ? toLocalDateTimeInput(cfg.startAt) : '',
+        entryDeadlineAt: cfg.entryDeadlineAt ? toLocalDateTimeInput(cfg.entryDeadlineAt) : '',
+        endAt: cfg.endAt ? toLocalDateTimeInput(cfg.endAt) : '',
+      };
+    }
+    setModalClassIds(cIds);
+    setModalClassConfigs(formatted);
+    setClassConfigModalExam(ex);
+  };
+
+  const handleSaveClassConfigs = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!classConfigModalExam) return;
+    setBusy(true);
+    setBanner(null);
+    try {
+      const payloadConfigs: Record<string, ClassExamConfigOverride> = {};
+      for (const cid of modalClassIds) {
+        const cfg = modalClassConfigs[cid];
+        if (!cfg) continue;
+        const hasOverride =
+          cfg.enabled === false ||
+          Boolean(cfg.startAt) ||
+          Boolean(cfg.entryDeadlineAt) ||
+          Boolean(cfg.endAt) ||
+          Boolean(cfg.durationMinutes && cfg.durationMinutes > 0) ||
+          (cfg.accessTokenMode && cfg.accessTokenMode !== 'inherit') ||
+          (cfg.publicationPolicy && cfg.publicationPolicy !== 'inherit') ||
+          (cfg.historyVisible && cfg.historyVisible !== 'inherit');
+        if (!hasOverride) continue;
+        payloadConfigs[cid] = {
+          enabled: cfg.enabled !== false,
+          startAt: cfg.startAt ? new Date(cfg.startAt).toISOString() : undefined,
+          entryDeadlineAt: cfg.entryDeadlineAt ? new Date(cfg.entryDeadlineAt).toISOString() : undefined,
+          endAt: cfg.endAt ? new Date(cfg.endAt).toISOString() : undefined,
+          durationMinutes: cfg.durationMinutes && cfg.durationMinutes > 0 ? Number(cfg.durationMinutes) : undefined,
+          accessTokenMode: cfg.accessTokenMode || 'inherit',
+          accessToken: cfg.accessTokenMode === 'exam_token' ? String(cfg.accessToken || '').trim() : '',
+          publicationPolicy: cfg.publicationPolicy || 'inherit',
+          historyVisible: cfg.historyVisible || 'inherit',
+        };
+      }
+      await apiFetch(`/api/admin/exams/${classConfigModalExam.id}/class-configs`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          classIds: modalClassIds,
+          classConfigs: payloadConfigs,
+        }),
+      });
+      setBanner({
+        type: 'ok',
+        text: `Pengaturan per kelas untuk "${classConfigModalExam.title}" berhasil disimpan.`,
+      });
+      setClassConfigModalExam(null);
+      await loadData();
+    } catch (err) {
+      setBanner({
+        type: 'err',
+        text: err instanceof Error ? err.message : 'Gagal menyimpan pengaturan per kelas.',
+      });
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const allExamsSelected = exams.length > 0 && exams.every((ex) => selectedExamIds.includes(ex.id));
   const examExportUrl = withAuthTokenUrl(
     `/api/admin/exams/export.xlsx${selectedExamIds.length > 0 ? `?ids=${encodeURIComponent(selectedExamIds.join(','))}` : ''}`
@@ -457,6 +595,75 @@ export const ExamsAndSchedulesPanel: React.FC = () => {
           <span>{banner.text}</span>
         </div>
       )}
+
+      {/* Global Student History & Results Visibility Control */}
+      <div
+        className={`rounded-2xl border p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition-colors ${
+          showStudentHistory
+            ? 'bg-emerald-50/60 border-emerald-200'
+            : 'bg-amber-50/70 border-amber-200'
+        }`}
+      >
+        <div className="flex items-start gap-3 min-w-0">
+          <div
+            className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
+              showStudentHistory ? 'bg-emerald-600 text-white' : 'bg-amber-600 text-white'
+            }`}
+          >
+            {showStudentHistory ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
+          </div>
+          <div className="min-w-0">
+            <p className="text-xs sm:text-sm font-bold text-slate-900">
+              Menu &ldquo;Riwayat &amp; Hasil Ujian&rdquo; Siswa:{' '}
+              <span className={showStudentHistory ? 'text-emerald-700' : 'text-amber-700'}>
+                {showStudentHistory ? 'Terlihat oleh Siswa' : 'Disembunyikan dari Siswa'}
+              </span>
+            </p>
+            <p className="text-xs text-slate-600 mt-0.5">
+              {showStudentHistory
+                ? 'Siswa dapat membuka tab Cek Nilai & Rapor serta melihat riwayat ujian selesai sesuai kebijakan publikasi per ujian.'
+                : 'Tab Cek Nilai & Rapor, kotak Riwayat Nilai, dan daftar riwayat ujian disembunyikan sementara dari seluruh portal siswa.'}
+            </p>
+          </div>
+        </div>
+        <button
+          type="button"
+          disabled={togglingHistory}
+          onClick={async () => {
+            setTogglingHistory(true);
+            setBanner(null);
+            try {
+              const nextVisible = !showStudentHistory;
+              const res = await apiFetch<{ showStudentExamHistory: boolean }>('/api/admin/settings/student-history', {
+                method: 'PATCH',
+                body: JSON.stringify({ visible: nextVisible }),
+              });
+              setShowStudentHistory(res.showStudentExamHistory);
+              setBanner({
+                type: 'ok',
+                text: res.showStudentExamHistory
+                  ? 'Menu Riwayat & Hasil Ujian sekarang terlihat di portal siswa.'
+                  : 'Menu Riwayat & Hasil Ujian sekarang disembunyikan dari portal siswa.',
+              });
+            } catch (err) {
+              setBanner({
+                type: 'err',
+                text: err instanceof Error ? err.message : 'Gagal mengubah visibilitas riwayat ujian.',
+              });
+            } finally {
+              setTogglingHistory(false);
+            }
+          }}
+          className={`min-h-[40px] px-4 py-2 rounded-xl text-xs font-semibold inline-flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0 disabled:opacity-50 transition-colors ${
+            showStudentHistory
+              ? 'border border-amber-300 bg-white hover:bg-amber-50 text-amber-800'
+              : 'bg-emerald-600 hover:bg-emerald-700 text-white'
+          }`}
+        >
+          {showStudentHistory ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+          <span>{togglingHistory ? 'Menyimpan...' : showStudentHistory ? 'Sembunyikan Riwayat & Hasil' : 'Tampilkan Riwayat & Hasil'}</span>
+        </button>
+      </div>
 
       {/* Exam Excel Import Preview */}
       {importPreview && (
@@ -564,6 +771,14 @@ export const ExamsAndSchedulesPanel: React.FC = () => {
       <div className="space-y-4">
         {exams.map((ex) => {
           const isChecked = selectedExamIds.includes(ex.id);
+          const examClassIds = parseClassIdsSafe(ex.class_ids_json);
+          const examClassNames = examClassIds
+            .map((cid) => classes.find((c) => c.id === cid)?.name)
+            .filter(Boolean);
+          const customClassCount = Object.keys(parseClassConfigsSafe(ex.class_configs_json)).filter((cid) =>
+            examClassIds.includes(cid)
+          ).length;
+
           return (
             <article
               key={ex.id}
@@ -607,10 +822,47 @@ export const ExamsAndSchedulesPanel: React.FC = () => {
                         : 'PIN Peserta'}
                     </span>
                   </p>
+                  <p className="text-xs text-slate-500">
+                    Kelas:{' '}
+                    <span className="font-medium text-slate-700">
+                      {examClassNames.length > 0 ? examClassNames.join(', ') : 'Belum ada kelas'}
+                    </span>
+                    {customClassCount > 0 && (
+                      <span className="ml-2 font-semibold text-violet-700">
+                        · {customClassCount} kelas diatur khusus
+                      </span>
+                    )}
+                  </p>
                 </div>
               </div>
 
               <div className="flex flex-wrap items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => openClassConfigModal(ex)}
+                  title="Atur jadwal, durasi, PIN/token, publikasi nilai, dan riwayat per kelas"
+                  className={`min-h-[40px] px-3 rounded-xl border text-xs font-semibold inline-flex items-center gap-1.5 transition-colors ${
+                    customClassCount > 0
+                      ? 'border-violet-300 bg-violet-50 hover:bg-violet-100 text-violet-800'
+                      : 'border-indigo-200 bg-indigo-50/70 hover:bg-indigo-100 text-indigo-800'
+                  }`}
+                >
+                  <Layers className="w-3.5 h-3.5" />
+                  <span>{customClassCount > 0 ? `Atur per Kelas (${customClassCount})` : 'Atur per Kelas'}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleToggleExamHistory(ex)}
+                  title="Atur apakah ujian ini muncul di menu Riwayat & Hasil Ujian siswa"
+                  className={`min-h-[40px] px-3 rounded-xl border text-xs font-semibold inline-flex items-center gap-1.5 transition-colors ${
+                    ex.history_visible === 0
+                      ? 'border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-800'
+                      : 'border-emerald-200 bg-emerald-50 hover:bg-emerald-100 text-emerald-800'
+                  }`}
+                >
+                  {ex.history_visible === 0 ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                  <span>{ex.history_visible === 0 ? 'Riwayat: Tersembunyi' : 'Riwayat: Terlihat'}</span>
+                </button>
                 <select
                   aria-label={`Kebijakan publikasi nilai ${ex.title}`}
                   value={ex.publication_policy}
@@ -863,6 +1115,14 @@ export const ExamsAndSchedulesPanel: React.FC = () => {
                     <option value="view_download_print">Lihat, Unduh &amp; Cetak</option>
                   </select>
                 </div>
+                <label className="flex items-center gap-2 pt-1">
+                  <input
+                    type="checkbox"
+                    checked={form.historyVisible}
+                    onChange={(e) => setForm({ ...form, historyVisible: e.target.checked })}
+                  />
+                  <span>Tampilkan di Riwayat &amp; Hasil Ujian Siswa</span>
+                </label>
               </div>
             </div>
 
@@ -1058,6 +1318,312 @@ export const ExamsAndSchedulesPanel: React.FC = () => {
                 className="min-h-[44px] px-5 py-2 rounded-xl bg-[#0e539a] hover:bg-[#0b437e] text-white text-sm font-semibold disabled:opacity-50"
               >
                 {busy ? 'Menyimpan...' : 'Terapkan ke Ujian'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* Per-Class Exam Configuration Modal */}
+      {classConfigModalExam && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4">
+          <form
+            onSubmit={handleSaveClassConfigs}
+            className="bg-white border border-indigo-200 rounded-t-3xl sm:rounded-2xl max-w-4xl w-full p-5 sm:p-6 space-y-5 max-h-[92dvh] overflow-y-auto pb-safe shadow-2xl"
+          >
+            <div className="w-10 h-1 rounded-full bg-slate-300 mx-auto sm:hidden" />
+            <div className="flex items-start justify-between gap-3 border-b border-slate-100 pb-3">
+              <div>
+                <h3 className="text-lg font-display font-bold text-slate-900 flex items-center gap-2">
+                  <Layers className="w-5 h-5 text-indigo-700" />
+                  <span>Pengaturan Ujian per Kelas</span>
+                </h3>
+                <p className="text-xs text-slate-600 mt-0.5">
+                  {classConfigModalExam.title} · Atur jadwal, durasi, token/PIN, publikasi nilai, dan visibilitas riwayat masing-masing kelas.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setClassConfigModalExam(null)}
+                className="min-h-[36px] px-3 rounded-lg text-xs font-semibold text-slate-500 hover:bg-slate-100"
+              >
+                Tutup
+              </button>
+            </div>
+
+            {/* Class Participation Checkboxes */}
+            <div>
+              <p className="text-xs font-bold text-slate-700 mb-2">Pilih Kelas Peserta Ujian Ini</p>
+              <div className="flex flex-wrap gap-2">
+                {classes.map((c) => {
+                  const checked = modalClassIds.includes(c.id);
+                  return (
+                    <label
+                      key={c.id}
+                      className={`px-3 py-1.5 rounded-xl border text-xs font-semibold cursor-pointer transition-colors ${
+                        checked
+                          ? 'bg-indigo-50 border-indigo-600 text-indigo-900'
+                          : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={(e) => {
+                          setModalClassIds((prev) =>
+                            e.target.checked ? [...prev, c.id] : prev.filter((id) => id !== c.id)
+                          );
+                        }}
+                        className="sr-only"
+                      />
+                      {c.name}
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Per-Class Settings Cards */}
+            {modalClassIds.length === 0 ? (
+              <div className="p-6 rounded-2xl bg-slate-50 border border-slate-200 text-center text-xs text-slate-500">
+                Pilih minimal satu kelas peserta di atas untuk mengatur konfigurasi masing-masing kelas.
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {modalClassIds.map((cid) => {
+                  const cls = classes.find((c) => c.id === cid);
+                  if (!cls) return null;
+                  const cfg: ClassExamConfigOverride = modalClassConfigs[cid] || {};
+                  const isCustom =
+                    cfg.enabled === false ||
+                    Boolean(cfg.startAt) ||
+                    Boolean(cfg.entryDeadlineAt) ||
+                    Boolean(cfg.endAt) ||
+                    Boolean(cfg.durationMinutes && cfg.durationMinutes > 0) ||
+                    (cfg.accessTokenMode && cfg.accessTokenMode !== 'inherit') ||
+                    (cfg.publicationPolicy && cfg.publicationPolicy !== 'inherit') ||
+                    (cfg.historyVisible && cfg.historyVisible !== 'inherit');
+
+                  const updateClsCfg = (patch: Partial<ClassExamConfigOverride>) => {
+                    setModalClassConfigs((prev) => ({
+                      ...prev,
+                      [cid]: { ...(prev[cid] || {}), ...patch },
+                    }));
+                  };
+
+                  return (
+                    <div
+                      key={cid}
+                      className={`rounded-2xl border p-4 space-y-3 transition-colors ${
+                        cfg.enabled === false
+                          ? 'bg-rose-50/40 border-rose-200'
+                          : isCustom
+                          ? 'bg-indigo-50/40 border-indigo-200'
+                          : 'bg-slate-50/60 border-slate-200'
+                      }`}
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex items-center gap-2.5">
+                          <span className="px-2.5 py-1 rounded-lg bg-indigo-600 text-white text-xs font-bold">
+                            {cls.name}
+                          </span>
+                          <span className="text-xs font-semibold text-slate-700">
+                            {cfg.enabled === false
+                              ? 'Dinonaktifkan untuk kelas ini'
+                              : isCustom
+                              ? 'Pengaturan Khusus Aktif'
+                              : 'Mengikuti Pengaturan Utama Ujian'}
+                          </span>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2 text-xs">
+                          <label className="inline-flex items-center gap-1.5 font-semibold text-slate-700 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={cfg.enabled !== false}
+                              onChange={(e) => updateClsCfg({ enabled: e.target.checked })}
+                            />
+                            <span>Aktif di Kelas Ini</span>
+                          </label>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              updateClsCfg({
+                                startAt: toLocalDateTimeInput(classConfigModalExam.start_at),
+                                entryDeadlineAt: toLocalDateTimeInput(
+                                  classConfigModalExam.entry_deadline_at || classConfigModalExam.end_at
+                                ),
+                                endAt: toLocalDateTimeInput(classConfigModalExam.end_at),
+                                durationMinutes: classConfigModalExam.duration_minutes,
+                              })
+                            }
+                            className="px-2.5 py-1 rounded-lg border border-indigo-200 bg-white hover:bg-indigo-50 font-semibold text-indigo-800"
+                          >
+                            Salin Jadwal Utama
+                          </button>
+                          {isCustom && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setModalClassConfigs((prev) => {
+                                  const next = { ...prev };
+                                  delete next[cid];
+                                  return next;
+                                })
+                              }
+                              className="px-2.5 py-1 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 font-semibold text-slate-600"
+                            >
+                              Reset ke Utama
+                            </button>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-4 gap-2.5 text-xs">
+                        <div>
+                          <label className="block font-semibold text-slate-600 mb-1">Mulai Khusus</label>
+                          <input
+                            type="datetime-local"
+                            value={cfg.startAt || ''}
+                            onChange={(e) => updateClsCfg({ startAt: e.target.value })}
+                            className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white"
+                          />
+                        </div>
+                        <div>
+                          <label className="block font-semibold text-slate-600 mb-1">Batas Masuk Khusus</label>
+                          <input
+                            type="datetime-local"
+                            value={cfg.entryDeadlineAt || ''}
+                            onChange={(e) => updateClsCfg({ entryDeadlineAt: e.target.value })}
+                            className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white"
+                          />
+                        </div>
+                        <div>
+                          <label className="block font-semibold text-slate-600 mb-1">Selesai Khusus</label>
+                          <input
+                            type="datetime-local"
+                            value={cfg.endAt || ''}
+                            onChange={(e) => updateClsCfg({ endAt: e.target.value })}
+                            className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white"
+                          />
+                        </div>
+                        <div>
+                          <label className="block font-semibold text-slate-600 mb-1">Durasi (Menit)</label>
+                          <input
+                            type="number"
+                            min={5}
+                            max={360}
+                            placeholder={`${classConfigModalExam.duration_minutes} (utama)`}
+                            value={cfg.durationMinutes || ''}
+                            onChange={(e) =>
+                              updateClsCfg({
+                                durationMinutes: e.target.value ? Number(e.target.value) : undefined,
+                              })
+                            }
+                            className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white font-mono"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-xs">
+                        <div>
+                          <label className="block font-semibold text-slate-600 mb-1">PIN / Token Akses Kelas</label>
+                          <select
+                            value={cfg.accessTokenMode || 'inherit'}
+                            onChange={(e) => {
+                              const mode = e.target.value as 'inherit' | 'student_pin' | 'exam_token';
+                              updateClsCfg({
+                                accessTokenMode: mode,
+                                accessToken:
+                                  mode === 'exam_token'
+                                    ? cfg.accessToken || generateRandomExamToken()
+                                    : '',
+                              });
+                            }}
+                            className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white"
+                          >
+                            <option value="inherit">Ikuti Pengaturan Utama</option>
+                            <option value="student_pin">Gunakan PIN Siswa</option>
+                            <option value="exam_token">Token Khusus Kelas Ini</option>
+                          </select>
+                          {cfg.accessTokenMode === 'exam_token' && (
+                            <div className="flex gap-1.5 mt-1.5">
+                              <input
+                                type="text"
+                                required
+                                minLength={4}
+                                maxLength={32}
+                                placeholder="Token (min 4 karakter)"
+                                value={cfg.accessToken || ''}
+                                onChange={(e) => updateClsCfg({ accessToken: e.target.value })}
+                                className="flex-1 min-w-0 px-2.5 py-1.5 rounded-lg border border-indigo-300 bg-white font-mono"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => updateClsCfg({ accessToken: generateRandomExamToken() })}
+                                className="px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-100 font-semibold shrink-0"
+                              >
+                                Acak
+                              </button>
+                            </div>
+                          )}
+                        </div>
+
+                        <div>
+                          <label className="block font-semibold text-slate-600 mb-1">Publikasi Nilai Kelas</label>
+                          <select
+                            value={cfg.publicationPolicy || 'inherit'}
+                            onChange={(e) =>
+                              updateClsCfg({
+                                publicationPolicy: e.target.value as PublicationPolicy | 'inherit',
+                              })
+                            }
+                            className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white"
+                          >
+                            <option value="inherit">Ikuti Pengaturan Utama</option>
+                            <option value="hidden">1. Hasil Disembunyikan</option>
+                            <option value="view_only">2. Hanya Dapat Dilihat</option>
+                            <option value="view_download">3. Lihat &amp; Unduh PDF</option>
+                            <option value="view_download_print">4. Lihat, Unduh &amp; Cetak</option>
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className="block font-semibold text-slate-600 mb-1">Riwayat &amp; Hasil Kelas</label>
+                          <select
+                            value={cfg.historyVisible || 'inherit'}
+                            onChange={(e) =>
+                              updateClsCfg({
+                                historyVisible: e.target.value as 'inherit' | 'visible' | 'hidden',
+                              })
+                            }
+                            className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white"
+                          >
+                            <option value="inherit">Ikuti Pengaturan Utama</option>
+                            <option value="visible">Terlihat oleh Kelas Ini</option>
+                            <option value="hidden">Disembunyikan untuk Kelas Ini</option>
+                          </select>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            <div className="flex flex-col-reverse sm:flex-row justify-end gap-2 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setClassConfigModalExam(null)}
+                className="min-h-[44px] px-4 py-2 rounded-xl border border-slate-200 text-sm font-medium"
+              >
+                Batal
+              </button>
+              <button
+                type="submit"
+                disabled={busy}
+                className="min-h-[44px] px-5 py-2 rounded-xl bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700 text-white text-sm font-semibold disabled:opacity-50"
+              >
+                {busy ? 'Menyimpan...' : 'Simpan Pengaturan per Kelas'}
               </button>
             </div>
           </form>

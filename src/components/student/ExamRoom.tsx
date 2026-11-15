@@ -596,9 +596,9 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
       : 'text-sm sm:text-base leading-relaxed';
 
   return (
-    <div className="min-h-screen bg-[#eef2f6] flex flex-col">
-      {/* TKA Official Royal-Blue Header Bar */}
-      <header className="sticky top-0 z-30 bg-[#0e539a] text-white border-b border-[#0a3e74] px-3 sm:px-6 h-14 flex items-center justify-between gap-2.5 shadow-xs">
+    <div className="min-h-screen flex flex-col">
+      {/* TKA Vibrant Multi-Stop Header Bar */}
+      <header className="sticky top-0 z-30 bg-gradient-to-r from-blue-800 via-indigo-700 to-teal-700 text-white border-b border-indigo-900/30 px-3 sm:px-6 h-14 flex items-center justify-between gap-2.5 shadow-sm">
         <div className="flex items-center gap-2.5 min-w-0">
           {branding?.logoEndpoint && (
             <img
@@ -606,20 +606,20 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
               alt={branding.shortName}
               referrerPolicy="no-referrer"
               onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
-              className="hidden sm:block w-8 h-8 rounded-lg object-contain bg-white p-0.5 shrink-0"
+              className="hidden sm:block w-8 h-8 rounded-lg object-contain bg-white p-0.5 shrink-0 shadow-xs"
             />
           )}
-          <StudentAvatar photoUrl={user.photoUrl} fullName={user.fullName} size="sm" className="border-white/40" />
+          <StudentAvatar photoUrl={user.photoUrl} fullName={user.fullName} size="sm" className="border-white/50" />
           <div className="min-w-0">
             <p className="text-xs sm:text-sm font-display font-bold text-white truncate">
-              {user.fullName} <span className="hidden sm:inline font-mono font-normal text-blue-100">· {user.nis}</span>
+              {user.fullName} <span className="hidden sm:inline font-mono font-normal text-sky-100">· {user.nis}</span>
             </p>
-            <div className="flex items-center gap-1.5 text-[11px] text-blue-100 truncate">
+            <div className="flex items-center gap-1.5 text-[11px] text-sky-100 truncate">
               <span className="truncate">{session.subjectName}</span>
               <span className="md:hidden" aria-hidden="true">·</span>
               <span
                 className={`md:hidden font-semibold shrink-0 ${
-                  !isOnline ? 'text-red-200' : saveStatus === 'saved' ? 'text-emerald-200' : 'text-amber-200'
+                  !isOnline ? 'text-rose-200' : saveStatus === 'saved' ? 'text-emerald-200' : 'text-amber-200'
                 }`}
               >
                 {!isOnline
@@ -636,14 +636,14 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
 
         <div className="flex items-center gap-2 sm:gap-3 shrink-0">
           {/* Desktop Save & Connection Status */}
-          <div className="hidden md:flex items-center gap-2 text-xs text-blue-100">
-            <span className={`flex items-center gap-1 font-medium ${isOnline ? 'text-emerald-200' : 'text-red-200'}`}>
+          <div className="hidden md:flex items-center gap-2 text-xs text-sky-100">
+            <span className={`flex items-center gap-1 font-medium ${isOnline ? 'text-emerald-200' : 'text-rose-200'}`}>
               {isOnline ? <Wifi className="w-3.5 h-3.5" /> : <WifiOff className="w-3.5 h-3.5" />}
               <span>{isOnline ? 'Terhubung' : 'Terputus'}</span>
             </span>
-            <span aria-hidden="true" className="text-white/30">·</span>
+            <span aria-hidden="true" className="text-white/35">·</span>
             <span className={`font-medium ${
-              saveStatus === 'saved' ? 'text-white' : saveStatus === 'pending' ? 'text-amber-200' : 'text-red-200'
+              saveStatus === 'saved' ? 'text-white' : saveStatus === 'pending' ? 'text-amber-200' : 'text-rose-200'
             }`}>
               {saveStatus === 'saved' && 'Tersimpan di server'}
               {saveStatus === 'pending' && `Sinkronisasi (${pendingQueueCount})`}
@@ -654,7 +654,7 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
           <button
             type="button"
             onClick={() => setShowNavigator(true)}
-            className="lg:hidden min-h-[36px] px-2.5 rounded-lg bg-white/15 hover:bg-white/25 border border-white/20 text-white text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap shrink-0"
+            className="lg:hidden min-h-[36px] px-2.5 rounded-lg bg-white/15 hover:bg-white/25 border border-white/25 text-white text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap shrink-0"
             aria-label="Buka daftar soal"
           >
             <Grid className="w-3.5 h-3.5" />
@@ -665,8 +665,8 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
           <div
             className={`px-2.5 sm:px-3 py-1.5 rounded-lg border font-mono text-xs sm:text-sm font-bold tabular-nums flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
               remainingSec < 300
-                ? 'bg-red-700 border-red-400 text-white'
-                : 'bg-[#093868] border-white/25 text-white'
+                ? 'bg-rose-600 border-rose-300 text-white'
+                : 'bg-slate-950/35 border-white/25 text-amber-200'
             }`}
           >
             <Clock className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
@@ -679,10 +679,10 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
       {liveNotice && (
         <div className="w-full max-w-6xl mx-auto px-3 sm:px-6 pt-3">
           <div
-            className={`p-3.5 rounded-xl border flex items-start justify-between gap-3 text-xs sm:text-sm ${
+            className={`p-3.5 rounded-xl border flex items-start justify-between gap-3 text-xs sm:text-sm shadow-xs ${
               liveNotice.tone === 'warn'
                 ? 'bg-amber-50 border-amber-300 text-amber-950'
-                : 'bg-sky-50 border-sky-200 text-slate-900'
+                : 'bg-gradient-to-r from-violet-50 via-indigo-50 to-sky-50 border-indigo-200 text-slate-900'
             }`}
           >
             <div className="min-w-0">
@@ -702,23 +702,34 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
 
       {/* Main Responsive TKA Exam Area */}
       <div className="flex-1 w-full max-w-6xl mx-auto p-3 sm:p-6 pb-24 grid grid-cols-1 lg:grid-cols-12 gap-5 sm:gap-6">
-        {/* TKA White Question Sheet */}
-        <section className="lg:col-span-8 bg-white border border-slate-200 shadow-[0_1px_2px_rgba(15,23,42,0.05)] rounded-xl overflow-hidden flex flex-col justify-between">
+        {/* TKA Crisp White Question Sheet with Colorful Header Accent */}
+        <section className="lg:col-span-8 bg-white border border-indigo-200/80 shadow-sm rounded-2xl overflow-hidden flex flex-col justify-between">
           {currentQuestion ? (
             <div>
+              <div className="h-1 w-full bg-gradient-to-r from-blue-600 via-indigo-500 via-violet-500 to-teal-500" aria-hidden="true" />
               {/* TKA Question Sheet Toolbar Strip: SOAL NO. + Font Scale */}
-              <div className="px-4 sm:px-6 py-3 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2.5">
+              <div className="px-4 sm:px-6 py-3 bg-gradient-to-r from-sky-50 via-indigo-50/70 to-teal-50/70 border-b border-indigo-100 flex flex-wrap items-center justify-between gap-2.5">
                 <div className="flex items-center gap-2.5 min-w-0">
-                  <div className="flex items-center rounded-lg overflow-hidden border border-[#0e539a] shrink-0">
-                    <span className="px-2.5 py-1 bg-[#0e539a] text-white text-[11px] font-bold tracking-wide">
+                  <div className="flex items-center rounded-lg overflow-hidden border border-indigo-600 shrink-0 shadow-xs">
+                    <span className="px-2.5 py-1 bg-gradient-to-r from-blue-600 to-indigo-600 text-white text-[11px] font-bold tracking-wide">
                       SOAL NO.
                     </span>
-                    <span className="px-2.5 py-1 bg-white text-[#0e539a] font-mono text-sm font-bold tabular-nums">
+                    <span className="px-2.5 py-1 bg-white text-indigo-800 font-mono text-sm font-bold tabular-nums">
                       {currentIdx + 1} / {questions.length}
                     </span>
                   </div>
                   <div className="min-w-0 text-xs text-slate-600 truncate">
-                    <span className="font-semibold text-slate-800">
+                    <span
+                      className={`font-bold ${
+                        currentQuestion.questionType === 'pg_tunggal'
+                          ? 'text-indigo-700'
+                          : currentQuestion.questionType === 'pg_kompleks'
+                          ? 'text-violet-700'
+                          : currentQuestion.questionType === 'benar_salah'
+                          ? 'text-teal-700'
+                          : 'text-amber-700'
+                      }`}
+                    >
                       {currentQuestion.questionType === 'pg_tunggal' && 'Pilihan Ganda'}
                       {currentQuestion.questionType === 'pg_kompleks' && 'Pilihan Ganda Kompleks'}
                       {currentQuestion.questionType === 'benar_salah' && 'Benar / Salah'}
@@ -734,13 +745,13 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
                 </div>
 
                 {/* TKA Font Size Adjuster (A- / A / A+) */}
-                <div className="flex items-center gap-1 p-0.5 bg-white border border-slate-200 rounded-lg shrink-0" role="group" aria-label="Ukuran huruf soal">
+                <div className="flex items-center gap-1 p-0.5 bg-white border border-indigo-200 rounded-lg shrink-0" role="group" aria-label="Ukuran huruf soal">
                   <button
                     type="button"
                     onClick={() => setFontScale('sm')}
                     aria-label="Perkecil huruf soal"
                     className={`min-h-[30px] px-2 rounded text-xs font-semibold transition-colors ${
-                      fontScale === 'sm' ? 'bg-[#0e539a] text-white' : 'text-slate-600 hover:bg-slate-100'
+                      fontScale === 'sm' ? 'bg-indigo-600 text-white' : 'text-slate-600 hover:bg-indigo-50'
                     }`}
                   >
                     A-
@@ -750,7 +761,7 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
                     onClick={() => setFontScale('base')}
                     aria-label="Ukuran huruf normal"
                     className={`min-h-[30px] px-2 rounded text-xs font-semibold transition-colors ${
-                      fontScale === 'base' ? 'bg-[#0e539a] text-white' : 'text-slate-600 hover:bg-slate-100'
+                      fontScale === 'base' ? 'bg-indigo-600 text-white' : 'text-slate-600 hover:bg-indigo-50'
                     }`}
                   >
                     A
@@ -760,7 +771,7 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
                     onClick={() => setFontScale('lg')}
                     aria-label="Perbesar huruf soal"
                     className={`min-h-[30px] px-2 rounded text-xs font-semibold transition-colors ${
-                      fontScale === 'lg' ? 'bg-[#0e539a] text-white' : 'text-slate-600 hover:bg-slate-100'
+                      fontScale === 'lg' ? 'bg-indigo-600 text-white' : 'text-slate-600 hover:bg-indigo-50'
                     }`}
                   >
                     A+
@@ -785,12 +796,12 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
                   )}
 
                   {currentQuestion.tableData && (
-                    <div className="overflow-x-auto border border-slate-200 rounded-lg">
+                    <div className="overflow-x-auto border border-indigo-200 rounded-lg">
                       <table className="w-full text-sm text-left">
-                        <thead className="bg-slate-100 text-slate-800 font-semibold">
+                        <thead className="bg-indigo-50 text-indigo-950 font-semibold">
                           <tr>
                             {currentQuestion.tableData.headers.map((h, i) => (
-                              <th key={i} className="px-3 py-2 border-b border-slate-200">
+                              <th key={i} className="px-3 py-2 border-b border-indigo-200">
                                 <MathRenderer content={h} />
                               </th>
                             ))}
@@ -824,14 +835,14 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
                           onClick={() => updateAnswer(currentQuestion.id, opt.id)}
                           className={`w-full min-h-[50px] p-3.5 rounded-xl border text-left flex items-start gap-3.5 transition-all active:scale-[0.995] ${
                             selected
-                              ? 'bg-sky-50/90 border-[#0e539a] text-slate-900 shadow-[0_0_0_1px_rgba(14,83,154,0.18)]'
-                              : 'bg-white border-slate-200 hover:bg-slate-50 text-slate-800'
+                              ? 'bg-indigo-50/90 border-indigo-600 text-slate-900 shadow-[0_0_0_1px_rgba(79,70,229,0.2)]'
+                              : 'bg-white border-slate-200 hover:bg-sky-50/40 hover:border-indigo-200 text-slate-800'
                           }`}
                         >
                           <span
                             className={`w-7 h-7 rounded-full border flex items-center justify-center font-mono text-xs font-bold shrink-0 mt-0.5 transition-colors ${
                               selected
-                                ? 'bg-[#0e539a] border-[#0e539a] text-white'
+                                ? 'bg-gradient-to-r from-blue-600 to-indigo-600 border-indigo-600 text-white'
                                 : 'bg-white border-slate-300 text-slate-700'
                             }`}
                           >
@@ -846,7 +857,7 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
 
                   {currentQuestion.questionType === 'pg_kompleks' && (
                     <div className="space-y-2.5">
-                      <p className="text-xs font-medium text-slate-500">Pilih semua jawaban yang benar (dapat lebih dari satu):</p>
+                      <p className="text-xs font-semibold text-violet-700">Pilih semua jawaban yang benar (dapat lebih dari satu):</p>
                       {(currentQuestion.options as Array<{ id: string; displayLabel: string; text: string }>).map((opt) => {
                         const currentArr = Array.isArray(answers[currentQuestion.id]?.answer)
                           ? (answers[currentQuestion.id]?.answer as string[])
@@ -863,13 +874,13 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
                             onClick={toggle}
                             className={`w-full min-h-[48px] p-3.5 rounded-xl border text-left flex items-start gap-3 transition-colors ${
                               checked
-                                ? 'bg-sky-50/90 border-[#0e539a] text-slate-900'
-                                : 'bg-white border-slate-200 hover:bg-slate-50 text-slate-800'
+                                ? 'bg-violet-50/90 border-violet-600 text-slate-900'
+                                : 'bg-white border-slate-200 hover:bg-violet-50/30 hover:border-violet-200 text-slate-800'
                             }`}
                           >
                             <span
                               className={`w-6 h-6 mt-0.5 rounded border flex items-center justify-center text-xs font-bold shrink-0 ${
-                                checked ? 'bg-[#0e539a] border-[#0e539a] text-white' : 'bg-white border-slate-300 text-transparent'
+                                checked ? 'bg-violet-600 border-violet-600 text-white' : 'bg-white border-slate-300 text-transparent'
                               }`}
                             >
                               ✓
@@ -884,11 +895,11 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
                   )}
 
                   {currentQuestion.questionType === 'benar_salah' && (
-                    <div className="border border-slate-200 rounded-xl overflow-hidden">
-                      <div className="hidden sm:grid sm:grid-cols-12 bg-slate-100 border-b border-slate-200 text-xs font-semibold text-slate-700">
+                    <div className="border border-teal-200 rounded-xl overflow-hidden">
+                      <div className="hidden sm:grid sm:grid-cols-12 bg-teal-50 border-b border-teal-200 text-xs font-bold text-teal-950">
                         <div className="col-span-8 px-4 py-2.5">Pernyataan</div>
-                        <div className="col-span-2 px-2 py-2.5 text-center border-l border-slate-200">Benar</div>
-                        <div className="col-span-2 px-2 py-2.5 text-center border-l border-slate-200">Salah</div>
+                        <div className="col-span-2 px-2 py-2.5 text-center border-l border-teal-200">Benar</div>
+                        <div className="col-span-2 px-2 py-2.5 text-center border-l border-teal-200">Salah</div>
                       </div>
                       <div className="divide-y divide-slate-200">
                         {(currentQuestion.options as Array<{ id: string; text: string }>).map((stmt, sIdx) => {
@@ -901,7 +912,7 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
                           return (
                             <div key={stmt.id} className="bg-white sm:grid sm:grid-cols-12 sm:items-stretch">
                               <div className={`sm:col-span-8 p-3.5 sm:px-4 flex gap-2 text-slate-800 ${stemSizeClass}`}>
-                                <span className="font-mono text-xs text-slate-400 pt-1 tabular-nums">{sIdx + 1}.</span>
+                                <span className="font-mono text-xs text-teal-700 pt-1 tabular-nums">{sIdx + 1}.</span>
                                 <MathRenderer content={stmt.text} />
                               </div>
                               {/* Mobile buttons */}
@@ -911,8 +922,8 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
                                   onClick={() => setStmtVal('B')}
                                   className={`flex-1 min-h-[44px] px-4 py-2 rounded-lg border text-xs font-semibold transition-colors ${
                                     val === 'B'
-                                      ? 'bg-[#0e539a] border-[#0e539a] text-white'
-                                      : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100'
+                                      ? 'bg-emerald-600 border-emerald-600 text-white'
+                                      : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-emerald-50'
                                   }`}
                                 >
                                   Benar
@@ -922,8 +933,8 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
                                   onClick={() => setStmtVal('S')}
                                   className={`flex-1 min-h-[44px] px-4 py-2 rounded-lg border text-xs font-semibold transition-colors ${
                                     val === 'S'
-                                      ? 'bg-[#0e539a] border-[#0e539a] text-white'
-                                      : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100'
+                                      ? 'bg-rose-600 border-rose-600 text-white'
+                                      : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-rose-50'
                                   }`}
                                 >
                                   Salah
@@ -937,8 +948,8 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
                                   onClick={() => setStmtVal('B')}
                                   className={`w-9 h-9 rounded-full border-2 flex items-center justify-center text-xs font-bold transition-colors ${
                                     val === 'B'
-                                      ? 'bg-[#0e539a] border-[#0e539a] text-white'
-                                      : 'bg-white border-slate-300 text-transparent hover:border-[#0e539a]'
+                                      ? 'bg-emerald-600 border-emerald-600 text-white'
+                                      : 'bg-white border-slate-300 text-transparent hover:border-emerald-500'
                                   }`}
                                 >
                                   ✓
@@ -951,8 +962,8 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
                                   onClick={() => setStmtVal('S')}
                                   className={`w-9 h-9 rounded-full border-2 flex items-center justify-center text-xs font-bold transition-colors ${
                                     val === 'S'
-                                      ? 'bg-[#0e539a] border-[#0e539a] text-white'
-                                      : 'bg-white border-slate-300 text-transparent hover:border-[#0e539a]'
+                                      ? 'bg-rose-600 border-rose-600 text-white'
+                                      : 'bg-white border-slate-300 text-transparent hover:border-rose-500'
                                   }`}
                                 >
                                   ✓
@@ -974,23 +985,23 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
                       (answers[currentQuestion.id]?.answer as Record<string, string> | undefined) || {};
                     return (
                       <div className="space-y-3">
-                        <div className="p-3.5 rounded-lg bg-slate-50 border border-slate-200 text-xs text-slate-700 space-y-1.5">
-                          <p className="font-semibold text-slate-900">Daftar Pilihan Kolom Kanan:</p>
+                        <div className="p-3.5 rounded-xl bg-amber-50/70 border border-amber-200 text-xs text-slate-700 space-y-1.5">
+                          <p className="font-bold text-amber-950">Daftar Pilihan Kolom Kanan:</p>
                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
                             {opts.right.map((r, rIdx) => (
                               <div key={r.id} className="flex items-center gap-1.5">
-                                <span className="font-mono font-bold text-[#0e539a]">{String.fromCharCode(65 + rIdx)}.</span>
+                                <span className="font-mono font-bold text-amber-700">{String.fromCharCode(65 + rIdx)}.</span>
                                 <MathRenderer content={r.text} />
                               </div>
                             ))}
                           </div>
                         </div>
 
-                        <div className="border border-slate-200 rounded-xl divide-y divide-slate-200">
+                        <div className="border border-amber-200 rounded-xl divide-y divide-slate-200">
                           {opts.left.map((leftItem, lIdx) => (
                             <div key={leftItem.id} className="p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white">
                               <div className={`${stemSizeClass} text-slate-900 flex gap-2`}>
-                                <span className="font-mono text-xs text-slate-400 pt-1 tabular-nums">{lIdx + 1}.</span>
+                                <span className="font-mono text-xs text-amber-700 pt-1 tabular-nums">{lIdx + 1}.</span>
                                 <MathRenderer content={leftItem.text} />
                               </div>
                               <select
@@ -1001,7 +1012,7 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
                                     [leftItem.id]: e.target.value,
                                   });
                                 }}
-                                className="min-h-[44px] px-3 py-2 rounded-lg border border-slate-300 bg-white text-sm text-slate-900 sm:w-56 shrink-0 focus:outline-none focus:border-[#0e539a]"
+                                className="min-h-[44px] px-3 py-2 rounded-lg border border-amber-300 bg-white text-sm text-slate-900 sm:w-56 shrink-0 focus:outline-none focus:border-amber-600"
                               >
                                 <option value="">-- Pilih Pasangan --</option>
                                 {opts.right.map((r, rIdx) => (
@@ -1026,12 +1037,12 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
           )}
         </section>
 
-        {/* Desktop Sidebar: TKA Daftar Soal Grid + Camera Preview */}
+        {/* Desktop Sidebar: Colorful TKA Daftar Soal Grid + Camera Preview */}
         <aside className="hidden lg:flex lg:col-span-4 flex-col gap-4">
-          <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
-            <div className="bg-[#0e539a] text-white px-4 py-3 flex items-center justify-between">
+          <div className="bg-white border border-indigo-200/80 rounded-2xl overflow-hidden shadow-sm">
+            <div className="bg-gradient-to-r from-indigo-700 via-blue-700 to-teal-600 text-white px-4 py-3 flex items-center justify-between">
               <h2 className="text-sm font-display font-bold">Daftar Soal</h2>
-              <span className="text-xs font-mono text-blue-100">{session.packageCode}</span>
+              <span className="text-xs font-mono text-sky-100">{session.packageCode}</span>
             </div>
 
             <div className="p-4 space-y-4">
@@ -1046,16 +1057,16 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
                       key={q.id}
                       type="button"
                       onClick={() => setCurrentIdx(idx)}
-                      className={`relative min-h-[42px] rounded-lg font-mono text-xs font-bold border transition-colors tabular-nums ${
+                      className={`relative min-h-[42px] rounded-xl font-mono text-xs font-bold border transition-all tabular-nums ${
                         active
-                          ? 'ring-2 ring-[#0e539a] ring-offset-1 border-[#0e539a]'
+                          ? 'ring-2 ring-teal-500 ring-offset-2 border-teal-600'
                           : ''
                       } ${
                         doubtful
                           ? 'bg-amber-400 border-amber-500 text-slate-950'
                           : answered
-                          ? 'bg-[#0e539a] border-[#0e539a] text-white'
-                          : 'bg-white border-slate-300 text-slate-700 hover:bg-slate-50'
+                          ? 'bg-indigo-600 border-indigo-700 text-white'
+                          : 'bg-white border-slate-300 text-slate-700 hover:bg-indigo-50'
                       }`}
                     >
                       <span>{idx + 1}</span>
@@ -1064,7 +1075,7 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
                           className={`absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full text-[9px] font-bold flex items-center justify-center border ${
                             doubtful
                               ? 'bg-slate-900 text-white border-amber-300'
-                              : 'bg-white text-[#0e539a] border-[#0e539a]'
+                              : 'bg-white text-indigo-700 border-indigo-600'
                           }`}
                         >
                           {choiceTag}
@@ -1078,7 +1089,7 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
               {/* TKA Color Legend + Counts */}
               <div className="pt-3 border-t border-slate-100 grid grid-cols-3 gap-2 text-[11px] text-slate-600">
                 <div className="flex items-center gap-1.5">
-                  <span className="w-3 h-3 rounded-sm bg-[#0e539a] shrink-0" />
+                  <span className="w-3 h-3 rounded-sm bg-indigo-600 shrink-0" />
                   <span className="tabular-nums">Dijawab ({statsSummary.answered})</span>
                 </div>
                 <div className="flex items-center gap-1.5">
@@ -1094,7 +1105,7 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
               <button
                 type="button"
                 onClick={() => setShowSubmitModal(true)}
-                className="w-full min-h-[44px] rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white text-sm font-semibold flex items-center justify-center gap-2 transition-colors"
+                className="w-full min-h-[44px] rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white text-sm font-semibold flex items-center justify-center gap-2 transition-all shadow-xs"
               >
                 <CheckCircle2 className="w-4 h-4 shrink-0" />
                 <span>Selesai &amp; Kumpulkan</span>
@@ -1103,13 +1114,15 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
           </div>
 
           {session.proctoring.enabled && (
-            <div className="bg-white border border-slate-200 rounded-xl p-4 space-y-2">
+            <div className="bg-white border border-teal-200 rounded-2xl p-4 space-y-2 shadow-sm">
               <div className="flex items-center justify-between text-xs">
                 <span className="font-semibold text-slate-800 flex items-center gap-1.5">
-                  <Camera className="w-4 h-4 text-[#0e539a]" />
+                  <Camera className="w-4 h-4 text-teal-600" />
                   <span>Kamera Pengawasan</span>
                 </span>
-                <span className="text-slate-500">{cameraStream ? 'Aktif' : 'Tidak Aktif'}</span>
+                <span className={cameraStream ? 'font-semibold text-emerald-700' : 'text-slate-500'}>
+                  {cameraStream ? 'Aktif' : 'Tidak Aktif'}
+                </span>
               </div>
               {cameraStream ? (
                 <video
@@ -1117,10 +1130,10 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
                   autoPlay
                   muted
                   playsInline
-                  className="w-full h-36 rounded-lg object-cover bg-slate-900"
+                  className="w-full h-36 rounded-xl object-cover bg-slate-900"
                 />
               ) : (
-                <div className="h-24 rounded-lg bg-slate-50 border border-slate-200 flex items-center justify-center text-xs text-slate-500 text-center px-3">
+                <div className="h-24 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-center text-xs text-slate-500 text-center px-3">
                   Kamera tidak tersedia atau izin ditolak. Status ini tercatat untuk pengawas.
                 </div>
               )}
@@ -1135,13 +1148,13 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
       )}
 
       {/* TKA Triad Bottom Navigation Bar (Mobile & Desktop) */}
-      <footer className="fixed bottom-0 left-0 right-0 z-30 bg-white/95 backdrop-blur-md border-t border-slate-200 px-3 sm:px-6 py-2 pb-safe">
+      <footer className="fixed bottom-0 left-0 right-0 z-30 bg-white/95 backdrop-blur-md border-t border-indigo-100 px-3 sm:px-6 py-2 pb-safe">
         <div className="max-w-6xl mx-auto flex items-center justify-between gap-2">
           <button
             type="button"
             disabled={currentIdx === 0}
             onClick={() => setCurrentIdx((i) => Math.max(0, i - 1))}
-            className="min-h-[44px] px-3 sm:px-4 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 disabled:opacity-40 text-slate-800 text-xs sm:text-sm font-semibold flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors"
+            className="min-h-[44px] px-3 sm:px-4 rounded-xl border border-indigo-200 bg-indigo-50/60 hover:bg-indigo-100 disabled:opacity-40 text-indigo-900 text-xs sm:text-sm font-semibold flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors"
           >
             <ChevronLeft className="w-4 h-4 shrink-0" />
             <span className="hidden sm:inline">Soal Sebelumnya</span>
@@ -1152,7 +1165,7 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
             <button
               type="button"
               onClick={toggleDoubtful}
-              className={`min-h-[44px] px-3 sm:px-4 rounded-lg border text-xs sm:text-sm font-semibold flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors ${
+              className={`min-h-[44px] px-3 sm:px-4 rounded-xl border text-xs sm:text-sm font-semibold flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors ${
                 currentQuestion && answers[currentQuestion.id]?.isDoubtful
                   ? 'bg-amber-400 border-amber-500 text-slate-950 font-bold'
                   : 'bg-amber-50 border-amber-300 hover:bg-amber-100 text-amber-950'
@@ -1165,13 +1178,13 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
             <button
               type="button"
               onClick={() => { setShowChat(true); setUnreadChat(0); }}
-              className="min-h-[44px] px-3 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 text-xs sm:text-sm font-semibold flex items-center gap-1.5 relative whitespace-nowrap shrink-0 transition-colors"
+              className="min-h-[44px] px-3 rounded-xl border border-teal-200 bg-teal-50/60 hover:bg-teal-100 text-teal-900 text-xs sm:text-sm font-semibold flex items-center gap-1.5 relative whitespace-nowrap shrink-0 transition-colors"
               aria-label="Chat Pengawas"
             >
               <MessageSquare className="w-4 h-4 shrink-0" />
               <span className="hidden sm:inline">Chat Pengawas</span>
               {unreadChat > 0 && (
-                <span className="ml-0.5 px-1.5 py-0.5 rounded bg-red-600 text-white text-[10px] font-bold">
+                <span className="ml-0.5 px-1.5 py-0.5 rounded bg-rose-600 text-white text-[10px] font-bold">
                   {unreadChat}
                 </span>
               )}
@@ -1182,7 +1195,7 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
             <button
               type="button"
               onClick={() => setCurrentIdx((i) => Math.min(questions.length - 1, i + 1))}
-              className="min-h-[44px] px-3.5 sm:px-4 rounded-lg bg-[#0e539a] hover:bg-[#0b437e] text-white text-xs sm:text-sm font-semibold flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors"
+              className="min-h-[44px] px-3.5 sm:px-4 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white text-xs sm:text-sm font-semibold flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors shadow-xs"
             >
               <span className="hidden sm:inline">Soal Berikutnya</span>
               <span className="sm:hidden">Berikutnya</span>
@@ -1192,7 +1205,7 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
             <button
               type="button"
               onClick={() => setShowSubmitModal(true)}
-              className="min-h-[44px] px-3.5 sm:px-4 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white text-xs sm:text-sm font-semibold flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors"
+              className="min-h-[44px] px-3.5 sm:px-4 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white text-xs sm:text-sm font-semibold flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors shadow-xs"
             >
               <CheckCircle2 className="w-4 h-4 shrink-0" />
               <span>Selesai</span>
@@ -1204,17 +1217,17 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
       {/* Mobile/Tablet TKA Question Navigator Drawer */}
       {showNavigator && (
         <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4">
-          <div className="bg-white rounded-t-2xl sm:rounded-xl w-full max-w-md overflow-hidden max-h-[85vh] flex flex-col shadow-xl">
-            <div className="bg-[#0e539a] text-white px-5 py-3.5 flex items-center justify-between">
+          <div className="bg-white rounded-t-2xl sm:rounded-2xl w-full max-w-md overflow-hidden max-h-[85vh] flex flex-col shadow-2xl">
+            <div className="bg-gradient-to-r from-indigo-700 via-blue-700 to-teal-600 text-white px-5 py-3.5 flex items-center justify-between">
               <div>
                 <h3 className="font-display font-bold text-sm">Daftar Soal</h3>
-                <p className="text-[11px] text-blue-100 font-mono">{session.packageCode}</p>
+                <p className="text-[11px] text-sky-100 font-mono">{session.packageCode}</p>
               </div>
               <button
                 type="button"
                 onClick={() => setShowNavigator(false)}
                 aria-label="Tutup daftar soal"
-                className="p-1.5 text-blue-100 hover:text-white rounded"
+                className="p-1.5 text-sky-100 hover:text-white rounded"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -1230,13 +1243,13 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
                       key={q.id}
                       type="button"
                       onClick={() => { setCurrentIdx(idx); setShowNavigator(false); }}
-                      className={`relative min-h-[44px] rounded-lg font-mono text-sm font-bold border tabular-nums ${
-                        idx === currentIdx ? 'ring-2 ring-[#0e539a] ring-offset-1 border-[#0e539a]' : ''
+                      className={`relative min-h-[44px] rounded-xl font-mono text-sm font-bold border tabular-nums ${
+                        idx === currentIdx ? 'ring-2 ring-teal-500 ring-offset-2 border-teal-600' : ''
                       } ${
                         doubtful
                           ? 'bg-amber-400 border-amber-500 text-slate-950'
                           : answered
-                          ? 'bg-[#0e539a] border-[#0e539a] text-white'
+                          ? 'bg-indigo-600 border-indigo-700 text-white'
                           : 'bg-white border-slate-300 text-slate-700'
                       }`}
                     >
@@ -1246,7 +1259,7 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
                           className={`absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full text-[9px] font-bold flex items-center justify-center border ${
                             doubtful
                               ? 'bg-slate-900 text-white border-amber-300'
-                              : 'bg-white text-[#0e539a] border-[#0e539a]'
+                              : 'bg-white text-indigo-700 border-indigo-600'
                           }`}
                         >
                           {choiceTag}
@@ -1257,14 +1270,14 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
                 })}
               </div>
               <div className="flex justify-between text-xs text-slate-600 pt-2 border-t border-slate-100 tabular-nums">
-                <span>Dijawab: {statsSummary.answered}</span>
-                <span>Ragu: {statsSummary.doubtful}</span>
+                <span className="font-semibold text-indigo-700">Dijawab: {statsSummary.answered}</span>
+                <span className="font-semibold text-amber-700">Ragu: {statsSummary.doubtful}</span>
                 <span>Kosong: {statsSummary.empty}</span>
               </div>
               <button
                 type="button"
                 onClick={() => { setShowNavigator(false); setShowSubmitModal(true); }}
-                className="w-full min-h-[48px] rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white font-semibold text-sm"
+                className="w-full min-h-[48px] rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white font-semibold text-sm"
               >
                 Selesai &amp; Kumpulkan Ujian
               </button>
@@ -1276,27 +1289,27 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
       {/* TKA Submit Confirmation Modal (Bottom sheet on HP) */}
       {showSubmitModal && (
         <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4">
-          <div className="bg-white border border-slate-200 rounded-t-2xl sm:rounded-xl max-w-md w-full overflow-hidden shadow-xl">
-            <div className="bg-[#0e539a] text-white px-5 py-3.5">
+          <div className="bg-white border border-emerald-200 rounded-t-2xl sm:rounded-2xl max-w-md w-full overflow-hidden shadow-2xl">
+            <div className="bg-gradient-to-r from-emerald-600 via-teal-600 to-blue-600 text-white px-5 py-3.5">
               <h3 className="text-base font-display font-bold">Konfirmasi Tes Selesai</h3>
             </div>
             <div className="p-5 sm:p-6 pb-safe space-y-4">
-              <div className="p-4 rounded-lg bg-slate-50 border border-slate-200 text-sm space-y-1.5">
+              <div className="p-4 rounded-xl bg-gradient-to-br from-sky-50 via-indigo-50/70 to-emerald-50 border border-indigo-200 text-sm space-y-1.5">
                 <div className="flex justify-between"><span>Total Soal</span><span className="font-mono font-bold tabular-nums">{questions.length}</span></div>
-                <div className="flex justify-between"><span>Sudah Dijawab</span><span className="font-mono font-bold text-[#0e539a] tabular-nums">{statsSummary.answered}</span></div>
+                <div className="flex justify-between"><span>Sudah Dijawab</span><span className="font-mono font-bold text-indigo-700 tabular-nums">{statsSummary.answered}</span></div>
                 <div className="flex justify-between"><span>Ditandai Ragu-ragu</span><span className="font-mono font-bold text-amber-700 tabular-nums">{statsSummary.doubtful}</span></div>
-                <div className="flex justify-between"><span>Belum Dijawab</span><span className="font-mono font-bold text-red-700 tabular-nums">{statsSummary.empty}</span></div>
+                <div className="flex justify-between"><span>Belum Dijawab</span><span className="font-mono font-bold text-rose-700 tabular-nums">{statsSummary.empty}</span></div>
               </div>
 
               {statsSummary.empty > 0 && (
-                <div className="p-3 rounded-lg bg-amber-50 border border-amber-200 text-xs text-amber-900 flex items-start gap-2">
+                <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-900 flex items-start gap-2">
                   <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
                   <span>Masih ada {statsSummary.empty} soal kosong. Setelah dikumpulkan, Anda tidak dapat mengubah jawaban lagi.</span>
                 </div>
               )}
 
               {submitError && (
-                <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-800">
+                <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-800">
                   {submitError}
                 </div>
               )}
@@ -1305,7 +1318,7 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
                 <button
                   type="button"
                   onClick={() => setShowSubmitModal(false)}
-                  className="w-full sm:w-auto min-h-[46px] px-4 rounded-lg border border-slate-200 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                  className="w-full sm:w-auto min-h-[46px] px-4 rounded-xl border border-slate-200 text-sm font-medium text-slate-700 hover:bg-slate-50"
                 >
                   Kembali Mengerjakan
                 </button>
@@ -1313,7 +1326,7 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
                   type="button"
                   disabled={submitting}
                   onClick={handleSubmitExam}
-                  className="w-full sm:w-auto min-h-[46px] px-5 rounded-lg bg-emerald-700 hover:bg-emerald-800 disabled:opacity-60 text-white text-sm font-semibold"
+                  className="w-full sm:w-auto min-h-[46px] px-5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 disabled:opacity-60 text-white text-sm font-semibold"
                 >
                   {submitting ? 'Menyinkronkan & Mengumpulkan...' : 'Selesai'}
                 </button>
@@ -1326,25 +1339,25 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
       {/* Auto-Lock Overlay (Keeps timer running on server, allows Student-Proctor Chat) */}
       {sessionStatus === 'locked' && (
         <div className="fixed inset-0 z-40 bg-slate-900/90 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white border border-slate-200 rounded-xl max-w-md w-full p-6 space-y-4 text-center">
-            <div className="w-14 h-14 rounded-xl bg-red-100 text-red-700 flex items-center justify-center mx-auto">
+          <div className="bg-white border border-rose-200 rounded-2xl max-w-md w-full p-6 space-y-4 text-center shadow-2xl">
+            <div className="w-14 h-14 rounded-2xl bg-rose-100 text-rose-700 flex items-center justify-center mx-auto">
               <Lock className="w-7 h-7" />
             </div>
             <h2 className="text-xl font-display font-bold text-slate-900">Sesi Ujian Terkunci Sementara</h2>
             <p className="text-sm text-slate-600 leading-relaxed">
               {lockReason || 'Sistem mengamati perpindahan fokus atau tab melebihi batas kebijakan ujian.'}
             </p>
-            <div className="p-3 rounded-lg bg-slate-50 border border-slate-200 text-xs text-slate-700 space-y-1">
+            <div className="p-3 rounded-xl bg-rose-50/70 border border-rose-200 text-xs text-slate-700 space-y-1">
               <p>Jawaban Anda yang sudah tersimpan tetap aman dan tidak dihapus.</p>
-              <p className="font-semibold text-red-700 tabular-nums">
+              <p className="font-semibold text-rose-700 tabular-nums">
                 Perhatian: Waktu ujian tetap berjalan ({formatTimer(remainingSec)} tersisa).
               </p>
-              <p className="font-mono text-slate-500 tabular-nums">Kejadian tercatat: {violationCount} / {session.maxViolations}</p>
+              <p className="font-mono text-slate-600 tabular-nums">Kejadian tercatat: {violationCount} / {session.maxViolations}</p>
             </div>
             <button
               type="button"
               onClick={() => { setShowChat(true); setUnreadChat(0); }}
-              className="w-full min-h-[48px] rounded-lg bg-[#0e539a] hover:bg-[#0b437e] text-white text-sm font-semibold flex items-center justify-center gap-2"
+              className="w-full min-h-[48px] rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white text-sm font-semibold flex items-center justify-center gap-2"
             >
               <MessageSquare className="w-4 h-4" />
               <span>Hubungi Pengawas untuk Membuka Kunci</span>
@@ -1356,13 +1369,13 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
       {/* Student-Proctor Chat Drawer (z-50 so accessible even when locked) */}
       {showChat && (
         <div className="fixed inset-0 z-50 bg-slate-900/50 flex justify-end">
-          <div className="bg-white w-full max-w-md h-full flex flex-col border-l border-slate-200">
-            <div className="p-4 bg-[#0e539a] text-white flex items-center justify-between">
+          <div className="bg-white w-full max-w-md h-full flex flex-col border-l border-indigo-200 shadow-2xl">
+            <div className="p-4 bg-gradient-to-r from-indigo-700 via-blue-700 to-teal-600 text-white flex items-center justify-between">
               <div>
                 <h3 className="font-display font-bold text-sm">Bantuan Pengawas Ujian</h3>
-                <p className="text-xs text-blue-100">Pesan hanya diterima oleh admin &amp; pengawas ruang</p>
+                <p className="text-xs text-sky-100">Pesan hanya diterima oleh admin &amp; pengawas ruang</p>
               </div>
-              <button type="button" onClick={() => setShowChat(false)} aria-label="Tutup chat" className="p-2 text-blue-100 hover:text-white">
+              <button type="button" onClick={() => setShowChat(false)} aria-label="Tutup chat" className="p-2 text-sky-100 hover:text-white">
                 <X className="w-5 h-5" />
               </button>
             </div>
@@ -1383,8 +1396,8 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
                       <div
                         className={`max-w-[85%] px-3.5 py-2.5 rounded-2xl text-xs sm:text-sm ${
                           isMe
-                            ? 'bg-[#0e539a] text-white rounded-br-sm'
-                            : 'bg-white border border-slate-200 text-slate-800 rounded-bl-sm'
+                            ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-br-sm'
+                            : 'bg-white border border-teal-200 text-slate-800 rounded-bl-sm'
                         }`}
                       >
                         {m.message}
@@ -1395,18 +1408,18 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
               )}
             </div>
 
-            <form onSubmit={handleSendChat} className="p-3 border-t border-slate-200 bg-white flex items-center gap-2">
+            <form onSubmit={handleSendChat} className="p-3 border-t border-indigo-100 bg-white flex items-center gap-2">
               <input
                 type="text"
                 value={chatInput}
                 onChange={(e) => setChatInput(e.target.value)}
                 placeholder="Tulis pesan untuk pengawas..."
-                className="flex-1 min-h-[44px] px-3.5 rounded-lg border border-slate-300 text-sm focus:outline-none focus:border-[#0e539a]"
+                className="flex-1 min-h-[44px] px-3.5 rounded-xl border border-indigo-200 text-sm focus:outline-none focus:border-indigo-600"
               />
               <button
                 type="submit"
                 aria-label="Kirim pesan"
-                className="min-h-[44px] min-w-[44px] px-4 rounded-lg bg-[#0e539a] hover:bg-[#0b437e] text-white flex items-center justify-center"
+                className="min-h-[44px] min-w-[44px] px-4 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white flex items-center justify-center"
               >
                 <Send className="w-4 h-4" />
               </button>

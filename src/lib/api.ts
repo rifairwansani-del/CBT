@@ -65,9 +65,12 @@ export async function apiFetch<T = unknown>(url: string, options: RequestInit = 
 
   const text = await res.text();
   let data: Record<string, unknown> = {};
+  let jsonParseFailed = false;
   try {
-    data = text ? JSON.parse(text) : {};
+    const parsed = text ? JSON.parse(text) : {};
+    data = parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : {};
   } catch {
+    jsonParseFailed = true;
     data = { error: text || 'Respons server tidak valid.' };
   }
 
@@ -87,6 +90,10 @@ export async function apiFetch<T = unknown>(url: string, options: RequestInit = 
     err.status = res.status;
     err.code = data.code ? String(data.code) : undefined;
     throw err;
+  }
+
+  if (jsonParseFailed) {
+    throw new Error('Respons server bukan format JSON yang valid.');
   }
 
   return data as T;

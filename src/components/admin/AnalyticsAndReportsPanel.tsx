@@ -88,11 +88,12 @@ export const AnalyticsAndReportsPanel: React.FC<{ branding: InstitutionBranding 
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    apiFetch<{ exams: typeof exams }>('/api/admin/exams')
+    apiFetch<{ exams?: typeof exams }>('/api/admin/exams')
       .then((res) => {
         setError(null);
-        setExams(res.exams);
-        const preferred = res.exams.find((e) => e.id === 'exm_to_mat_done') || res.exams[0];
+        const nextExams = Array.isArray(res?.exams) ? res.exams : [];
+        setExams(nextExams);
+        const preferred = nextExams.find((e) => e.id === 'exm_to_mat_done') || nextExams[0];
         if (preferred) setSelectedExamId(preferred.id);
       })
       .catch((err) => {

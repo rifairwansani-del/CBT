@@ -117,7 +117,7 @@ export const LiveMonitoringPanel: React.FC<{ user: AuthUser }> = ({ user }) => {
     scope: 'exam' | 'selected';
     studentIds: string[];
     targetLabel: string;
-    category: 'pesan' | 'peringatan' | 'instruksi' | 'kesan';
+    category: 'pesan' | 'pengumuman' | 'peringatan' | 'instruksi' | 'kesan';
     title: string;
     message: string;
   } | null>(null);
@@ -140,10 +140,11 @@ export const LiveMonitoringPanel: React.FC<{ user: AuthUser }> = ({ user }) => {
 
   const loadExams = async () => {
     try {
-      const res = await apiFetch<{ exams: typeof exams }>('/api/monitor/exams');
-      setExams(res.exams);
-      if (!selectedExamId && res.exams[0]) {
-        setSelectedExamId(res.exams[0].id);
+      const res = await apiFetch<{ exams?: typeof exams }>('/api/monitor/exams');
+      const nextExams = Array.isArray(res?.exams) ? res.exams : [];
+      setExams(nextExams);
+      if (!selectedExamId && nextExams[0]) {
+        setSelectedExamId(nextExams[0].id);
       }
     } catch (err) {
       setActionBanner({ type: 'err', text: err instanceof Error ? err.message : 'Gagal memuat daftar ujian.' });
@@ -154,10 +155,11 @@ export const LiveMonitoringPanel: React.FC<{ user: AuthUser }> = ({ user }) => {
     if (!examId) return;
     setLoading(true);
     try {
-      const res = await apiFetch<{ stats: typeof stats; participants: ParticipantRow[] }>(`/api/monitor/exams/${examId}/participants`);
-      setStats(res.stats);
-      setParticipants(res.participants);
-      setSelectedStudentIds((prev) => prev.filter((id) => res.participants.some((p) => p.studentId === id)));
+      const res = await apiFetch<{ stats?: typeof stats; participants?: ParticipantRow[] }>(`/api/monitor/exams/${examId}/participants`);
+      const nextParticipants = Array.isArray(res?.participants) ? res.participants : [];
+      if (res?.stats) setStats(res.stats);
+      setParticipants(nextParticipants);
+      setSelectedStudentIds((prev) => prev.filter((id) => nextParticipants.some((p) => p.studentId === id)));
     } catch (err) {
       setActionBanner({ type: 'err', text: err instanceof Error ? err.message : 'Gagal memuat peserta ujian.' });
     } finally {
@@ -495,13 +497,13 @@ export const LiveMonitoringPanel: React.FC<{ user: AuthUser }> = ({ user }) => {
   return (
     <div className="space-y-5">
       {/* Exam Selector + Broadcast Message Button */}
-      <div className="bg-white border border-slate-200/80 shadow-[0_1px_2px_rgba(15,23,42,0.04)] rounded-2xl p-4 flex flex-col md:flex-row md:items-end justify-between gap-3">
+      <div className="bg-white border border-indigo-100 shadow-sm rounded-2xl p-4 flex flex-col md:flex-row md:items-end justify-between gap-3">
         <div className="flex-1 min-w-0">
-          <label className="block text-xs font-semibold text-slate-500 mb-1">Ujian yang Dipantau (Real-Time)</label>
+          <label className="block text-xs font-bold text-emerald-700 mb-1">Ujian yang Dipantau (Real-Time)</label>
           <select
             value={selectedExamId}
             onChange={(e) => setSelectedExamId(e.target.value)}
-            className="w-full min-h-[44px] px-3 rounded-xl border border-slate-300 bg-white text-base sm:text-sm font-semibold text-slate-900"
+            className="w-full min-h-[44px] px-3 rounded-xl border border-indigo-200 bg-indigo-50/20 text-base sm:text-sm font-semibold text-slate-900 focus:outline-none focus:border-indigo-600"
           >
             {exams.map((ex) => (
               <option key={ex.id} value={ex.id}>[{ex.exam_type}] {ex.title} — {ex.subject_name}</option>
@@ -525,7 +527,7 @@ export const LiveMonitoringPanel: React.FC<{ user: AuthUser }> = ({ user }) => {
                 message: '',
               })
             }
-            className="min-h-[44px] px-4 rounded-xl bg-[#0e539a] hover:bg-[#0b437e] disabled:opacity-50 text-white text-xs font-semibold flex items-center justify-center gap-2 whitespace-nowrap"
+            className="min-h-[44px] px-4 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-700 hover:to-indigo-700 disabled:opacity-50 text-white text-xs font-semibold flex items-center justify-center gap-2 whitespace-nowrap shadow-xs"
           >
             <MessageSquare className="w-4 h-4 shrink-0" />
             <span>Kirim Pesan / Kesan</span>
@@ -533,7 +535,7 @@ export const LiveMonitoringPanel: React.FC<{ user: AuthUser }> = ({ user }) => {
           <button
             type="button"
             onClick={() => loadParticipants(selectedExamId)}
-            className="min-h-[44px] px-4 rounded-xl border border-slate-200 hover:bg-slate-50 text-xs font-semibold text-slate-700 flex items-center justify-center gap-2 whitespace-nowrap"
+            className="min-h-[44px] px-4 rounded-xl border border-teal-200 bg-teal-50/60 hover:bg-teal-100 text-xs font-semibold text-teal-900 flex items-center justify-center gap-2 whitespace-nowrap"
           >
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
             <span>Segarkan</span>
@@ -546,7 +548,7 @@ export const LiveMonitoringPanel: React.FC<{ user: AuthUser }> = ({ user }) => {
           className={`p-3.5 rounded-xl border text-xs sm:text-sm flex items-center justify-between gap-3 ${
             actionBanner.type === 'ok'
               ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
-              : 'bg-red-50 border-red-200 text-red-900'
+              : 'bg-rose-50 border-rose-200 text-rose-900'
           }`}
         >
           <span>{actionBanner.text}</span>
@@ -556,31 +558,92 @@ export const LiveMonitoringPanel: React.FC<{ user: AuthUser }> = ({ user }) => {
         </div>
       )}
 
-      {/* Real-time Counters */}
+      {/* Color-Coded Real-time Counters */}
       <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
         {[
-          { label: 'Total Peserta', val: stats.total, key: 'all', color: 'text-slate-900' },
-          { label: 'Belum Login', val: stats.notLoggedIn, key: 'not_logged_in', color: 'text-slate-600' },
-          { label: 'Sedang Ujian', val: stats.inProgress, key: 'in_progress', color: 'text-blue-900' },
-          { label: 'Selesai', val: stats.submitted, key: 'submitted', color: 'text-emerald-700' },
-          { label: 'Terkunci', val: stats.locked, key: 'locked', color: 'text-red-700' },
-          { label: 'Terputus', val: stats.disconnected, key: 'disconnected', color: 'text-amber-700' },
-          { label: 'Ada Indikator', val: stats.withIndicators, key: 'indicators', color: 'text-amber-800' },
-        ].map((box) => (
-          <button
-            key={box.key}
-            type="button"
-            onClick={() => setStatusFilter(box.key)}
-            className={`p-3.5 rounded-2xl border text-left transition-colors ${
-              statusFilter === box.key
-                ? 'bg-blue-50 border-blue-900'
-                : 'bg-white border-slate-200/80 shadow-[0_1px_2px_rgba(15,23,42,0.04)] hover:bg-slate-50'
-            }`}
-          >
-            <p className="text-[11px] font-medium text-slate-500">{box.label}</p>
-            <p className={`text-2xl font-display font-bold tabular-nums mt-0.5 ${box.color}`}>{box.val}</p>
-          </button>
-        ))}
+          {
+            label: 'Total Peserta',
+            val: stats.total,
+            key: 'all',
+            idleBox: 'bg-indigo-50/80 border-indigo-200 hover:bg-indigo-100/70',
+            activeBox: 'bg-gradient-to-br from-indigo-600 to-blue-600 border-indigo-700 text-white shadow-sm',
+            idleLabel: 'text-indigo-700',
+            idleVal: 'text-indigo-950',
+          },
+          {
+            label: 'Belum Login',
+            val: stats.notLoggedIn,
+            key: 'not_logged_in',
+            idleBox: 'bg-slate-50 border-slate-200 hover:bg-slate-100',
+            activeBox: 'bg-slate-700 border-slate-800 text-white shadow-sm',
+            idleLabel: 'text-slate-600',
+            idleVal: 'text-slate-800',
+          },
+          {
+            label: 'Sedang Ujian',
+            val: stats.inProgress,
+            key: 'in_progress',
+            idleBox: 'bg-sky-50/85 border-sky-200 hover:bg-sky-100/70',
+            activeBox: 'bg-gradient-to-br from-sky-600 to-cyan-600 border-sky-700 text-white shadow-sm',
+            idleLabel: 'text-sky-700',
+            idleVal: 'text-sky-950',
+          },
+          {
+            label: 'Selesai',
+            val: stats.submitted,
+            key: 'submitted',
+            idleBox: 'bg-emerald-50/85 border-emerald-200 hover:bg-emerald-100/70',
+            activeBox: 'bg-gradient-to-br from-emerald-600 to-teal-600 border-emerald-700 text-white shadow-sm',
+            idleLabel: 'text-emerald-700',
+            idleVal: 'text-emerald-950',
+          },
+          {
+            label: 'Terkunci',
+            val: stats.locked,
+            key: 'locked',
+            idleBox: 'bg-rose-50/85 border-rose-200 hover:bg-rose-100/70',
+            activeBox: 'bg-gradient-to-br from-rose-600 to-red-600 border-rose-700 text-white shadow-sm',
+            idleLabel: 'text-rose-700',
+            idleVal: 'text-rose-950',
+          },
+          {
+            label: 'Terputus',
+            val: stats.disconnected,
+            key: 'disconnected',
+            idleBox: 'bg-amber-50/85 border-amber-200 hover:bg-amber-100/70',
+            activeBox: 'bg-gradient-to-br from-amber-500 to-orange-600 border-amber-600 text-white shadow-sm',
+            idleLabel: 'text-amber-800',
+            idleVal: 'text-amber-950',
+          },
+          {
+            label: 'Ada Indikator',
+            val: stats.withIndicators,
+            key: 'indicators',
+            idleBox: 'bg-violet-50/85 border-violet-200 hover:bg-violet-100/70',
+            activeBox: 'bg-gradient-to-br from-violet-600 to-purple-600 border-violet-700 text-white shadow-sm',
+            idleLabel: 'text-violet-700',
+            idleVal: 'text-violet-950',
+          },
+        ].map((box) => {
+          const isActiveFilter = statusFilter === box.key;
+          return (
+            <button
+              key={box.key}
+              type="button"
+              onClick={() => setStatusFilter(box.key)}
+              className={`p-3.5 rounded-2xl border text-left transition-all ${
+                isActiveFilter ? box.activeBox : box.idleBox
+              }`}
+            >
+              <p className={`text-[11px] font-semibold ${isActiveFilter ? 'text-white/90' : box.idleLabel}`}>
+                {box.label}
+              </p>
+              <p className={`text-2xl font-display font-bold tabular-nums mt-0.5 ${isActiveFilter ? 'text-white' : box.idleVal}`}>
+                {box.val}
+              </p>
+            </button>
+          );
+        })}
       </div>
 
       {/* Filters */}
@@ -590,12 +653,12 @@ export const LiveMonitoringPanel: React.FC<{ user: AuthUser }> = ({ user }) => {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Cari nama atau NIS peserta..."
-          className="min-h-[42px] px-3 rounded-xl border border-slate-300 bg-white text-base sm:text-sm flex-1 sm:max-w-xs"
+          className="min-h-[42px] px-3 rounded-xl border border-indigo-200 bg-white text-base sm:text-sm flex-1 sm:max-w-xs focus:outline-none focus:border-indigo-500"
         />
         <select
           value={classFilter}
           onChange={(e) => setClassFilter(e.target.value)}
-          className="min-h-[42px] px-3 rounded-xl border border-slate-300 bg-white text-base sm:text-sm"
+          className="min-h-[42px] px-3 rounded-xl border border-indigo-200 bg-white text-base sm:text-sm focus:outline-none focus:border-indigo-500"
         >
           <option value="all">Semua Kelas</option>
           {uniqueClasses.map((c) => <option key={c} value={c}>{c}</option>)}
@@ -604,10 +667,10 @@ export const LiveMonitoringPanel: React.FC<{ user: AuthUser }> = ({ user }) => {
 
       {/* Bulk Action Bar for Selected Participants */}
       {selectedStudentIds.length > 0 && (
-        <div className="bg-blue-50 border border-blue-200 rounded-2xl px-4 py-3 flex flex-wrap items-center justify-between gap-3">
-          <div className="text-xs sm:text-sm font-semibold text-blue-950 tabular-nums">
+        <div className="bg-gradient-to-r from-indigo-50 via-sky-50 to-violet-50 border border-indigo-200 rounded-2xl px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+          <div className="text-xs sm:text-sm font-semibold text-indigo-950 tabular-nums">
             {selectedStudentIds.length} peserta dipilih
-            <span className="text-blue-700 font-normal ml-2">
+            <span className="text-indigo-700 font-normal ml-2">
               ({selectedSessionIds.length} memiliki sesi ujian)
             </span>
           </div>
@@ -622,7 +685,7 @@ export const LiveMonitoringPanel: React.FC<{ user: AuthUser }> = ({ user }) => {
                   reason: '',
                 })
               }
-              className="min-h-[38px] px-3 py-1.5 rounded-xl bg-white border border-amber-300 hover:bg-amber-50 disabled:opacity-45 text-xs font-semibold text-amber-900 inline-flex items-center gap-1.5 whitespace-nowrap"
+              className="min-h-[38px] px-3 py-1.5 rounded-xl bg-amber-100 border border-amber-300 hover:bg-amber-200 disabled:opacity-45 text-xs font-semibold text-amber-950 inline-flex items-center gap-1.5 whitespace-nowrap"
             >
               <Lock className="w-3.5 h-3.5" />
               <span>Kunci ({selectedActiveSessionIds.length})</span>
@@ -646,7 +709,7 @@ export const LiveMonitoringPanel: React.FC<{ user: AuthUser }> = ({ user }) => {
                     setBusyAction(false);
                   }
                 }}
-                className="min-h-[38px] px-3 py-1.5 rounded-xl bg-white border border-blue-300 hover:bg-blue-100/50 disabled:opacity-45 text-xs font-semibold text-blue-900 inline-flex items-center gap-1.5 whitespace-nowrap"
+                className="min-h-[38px] px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-45 text-xs font-semibold text-white inline-flex items-center gap-1.5 whitespace-nowrap"
               >
                 <LockOpen className="w-3.5 h-3.5" />
                 <span>Buka Kunci ({selectedLockedSessionIds.length})</span>
@@ -664,7 +727,7 @@ export const LiveMonitoringPanel: React.FC<{ user: AuthUser }> = ({ user }) => {
                     notes: '',
                   })
                 }
-                className="min-h-[38px] px-3 py-1.5 rounded-xl bg-white border border-slate-300 hover:bg-slate-100 disabled:opacity-45 text-xs font-semibold text-slate-800 inline-flex items-center gap-1.5 whitespace-nowrap"
+                className="min-h-[38px] px-3 py-1.5 rounded-xl bg-indigo-100 border border-indigo-300 hover:bg-indigo-200 disabled:opacity-45 text-xs font-semibold text-indigo-950 inline-flex items-center gap-1.5 whitespace-nowrap"
               >
                 <RotateCcw className="w-3.5 h-3.5" />
                 <span>Reset ({selectedSessionIds.length})</span>
@@ -680,7 +743,7 @@ export const LiveMonitoringPanel: React.FC<{ user: AuthUser }> = ({ user }) => {
                   extraMinutes: 10,
                 })
               }
-              className="min-h-[38px] px-3 py-1.5 rounded-xl bg-white border border-slate-300 hover:bg-slate-100 disabled:opacity-45 text-xs font-semibold text-slate-800 inline-flex items-center gap-1.5 whitespace-nowrap"
+              className="min-h-[38px] px-3 py-1.5 rounded-xl bg-cyan-100 border border-cyan-300 hover:bg-cyan-200 disabled:opacity-45 text-xs font-semibold text-cyan-950 inline-flex items-center gap-1.5 whitespace-nowrap"
             >
               <Clock className="w-3.5 h-3.5" />
               <span>+Waktu</span>
@@ -703,7 +766,7 @@ export const LiveMonitoringPanel: React.FC<{ user: AuthUser }> = ({ user }) => {
                   },
                 })
               }
-              className="min-h-[38px] px-3 py-1.5 rounded-xl bg-red-700 hover:bg-red-800 disabled:opacity-45 text-white text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap"
+              className="min-h-[38px] px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 disabled:opacity-45 text-white text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap"
             >
               <StopCircle className="w-3.5 h-3.5" />
               <span>Paksa Kumpulkan</span>
@@ -720,7 +783,7 @@ export const LiveMonitoringPanel: React.FC<{ user: AuthUser }> = ({ user }) => {
                   message: '',
                 })
               }
-              className="min-h-[38px] px-3 py-1.5 rounded-xl bg-[#0e539a] hover:bg-[#0b437e] text-white text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap"
+              className="min-h-[38px] px-3 py-1.5 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-700 hover:to-indigo-700 text-white text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap"
             >
               <MessageSquare className="w-3.5 h-3.5" />
               <span>Kirim Pesan</span>
@@ -989,7 +1052,7 @@ export const LiveMonitoringPanel: React.FC<{ user: AuthUser }> = ({ user }) => {
                           <button
                             type="button"
                             onClick={() => handleUnlockSingle(p.sessionId!, false, 'Dibuka langsung dari panel monitoring')}
-                            className="px-2.5 py-1.5 rounded-lg bg-blue-900 hover:bg-blue-800 text-white text-xs font-semibold inline-flex items-center gap-1"
+                            className="px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold inline-flex items-center gap-1"
                             title="Buka kunci sesi"
                           >
                             <LockOpen className="w-3.5 h-3.5" />
@@ -1007,7 +1070,7 @@ export const LiveMonitoringPanel: React.FC<{ user: AuthUser }> = ({ user }) => {
                                 notes: '',
                               })
                             }
-                            className="px-2.5 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-100 text-xs font-semibold text-slate-700 inline-flex items-center gap-1"
+                            className="px-2.5 py-1.5 rounded-lg border border-indigo-200 bg-indigo-50/70 hover:bg-indigo-100 text-xs font-semibold text-indigo-900 inline-flex items-center gap-1"
                             title="Reset pelanggaran atau ulang sesi dari awal"
                           >
                             <RotateCcw className="w-3.5 h-3.5" />
@@ -1024,7 +1087,7 @@ export const LiveMonitoringPanel: React.FC<{ user: AuthUser }> = ({ user }) => {
                                 extraMinutes: 10,
                               })
                             }
-                            className="px-2.5 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-100 text-xs font-semibold text-slate-700 inline-flex items-center gap-1"
+                            className="px-2.5 py-1.5 rounded-lg border border-cyan-200 bg-cyan-50/70 hover:bg-cyan-100 text-xs font-semibold text-cyan-900 inline-flex items-center gap-1"
                             title="Tambah alokasi waktu ujian"
                           >
                             <Clock className="w-3.5 h-3.5" />
@@ -1043,7 +1106,7 @@ export const LiveMonitoringPanel: React.FC<{ user: AuthUser }> = ({ user }) => {
                               message: '',
                             })
                           }
-                          className="px-2.5 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-100 text-xs font-semibold text-[#0e539a] inline-flex items-center gap-1"
+                          className="px-2.5 py-1.5 rounded-lg border border-violet-200 bg-violet-50/70 hover:bg-violet-100 text-xs font-semibold text-violet-900 inline-flex items-center gap-1"
                           title="Kirim pesan atau kesan ke peserta"
                         >
                           <MessageSquare className="w-3.5 h-3.5" />
@@ -1053,7 +1116,7 @@ export const LiveMonitoringPanel: React.FC<{ user: AuthUser }> = ({ user }) => {
                           <button
                             type="button"
                             onClick={() => openDetail(p)}
-                            className="px-2.5 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-100 text-xs font-semibold text-slate-800 inline-flex items-center gap-1"
+                            className="px-2.5 py-1.5 rounded-lg border border-sky-200 bg-sky-50/70 hover:bg-sky-100 text-xs font-semibold text-sky-900 inline-flex items-center gap-1"
                           >
                             <Eye className="w-3.5 h-3.5" />
                             <span>Periksa</span>
@@ -1562,10 +1625,11 @@ export const LiveMonitoringPanel: React.FC<{ user: AuthUser }> = ({ user }) => {
                 <label className="block text-xs font-semibold text-slate-700 mb-1">Kategori</label>
                 <select
                   value={messageModal.category}
-                  onChange={(e) => setMessageModal({ ...messageModal, category: e.target.value as 'pesan' | 'peringatan' | 'instruksi' | 'kesan' })}
+                  onChange={(e) => setMessageModal({ ...messageModal, category: e.target.value as 'pesan' | 'pengumuman' | 'peringatan' | 'instruksi' | 'kesan' })}
                   className="w-full min-h-[44px] px-3 py-2 rounded-xl border border-slate-300 bg-white text-sm"
                 >
-                  <option value="pesan">Pesan / Pengumuman</option>
+                  <option value="pengumuman">Pengumuman Penting</option>
+                  <option value="pesan">Pesan / Informasi</option>
                   <option value="instruksi">Instruksi Teknis</option>
                   <option value="peringatan">Peringatan / Teguran</option>
                   <option value="kesan">Kesan &amp; Catatan</option>

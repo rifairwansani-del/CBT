@@ -182,7 +182,7 @@ export const StudentsAndPhotosPanel: React.FC<{ isAdmin: boolean }> = ({ isAdmin
   const [msgClassId, setMsgClassId] = useState('');
   const [msgStudentIds, setMsgStudentIds] = useState<string[]>([]);
   const [msgSearch, setMsgSearch] = useState('');
-  const [msgCategory, setMsgCategory] = useState<'pesan' | 'peringatan' | 'instruksi' | 'kesan'>('pesan');
+  const [msgCategory, setMsgCategory] = useState<'pesan' | 'pengumuman' | 'peringatan' | 'instruksi' | 'kesan'>('pengumuman');
   const [msgTitle, setMsgTitle] = useState('');
   const [msgBody, setMsgBody] = useState('');
   const [busy, setBusy] = useState(false);
@@ -197,18 +197,21 @@ export const StudentsAndPhotosPanel: React.FC<{ isAdmin: boolean }> = ({ isAdmin
     setLoading(true);
     try {
       const [cRes, sRes, stRes] = await Promise.all([
-        apiFetch<{ classes: ClassItem[] }>('/api/admin/classes'),
-        apiFetch<{ subjects: SubjectItem[] }>('/api/admin/subjects'),
-        apiFetch<{ students: StudentRow[] }>('/api/admin/students'),
+        apiFetch<{ classes?: ClassItem[] }>('/api/admin/classes'),
+        apiFetch<{ subjects?: SubjectItem[] }>('/api/admin/subjects'),
+        apiFetch<{ students?: StudentRow[] }>('/api/admin/students'),
       ]);
-      setClasses(cRes.classes);
-      setSubjects(sRes.subjects);
-      setStudents(stRes.students);
-      setSelectedStudentIds((prev) => prev.filter((id) => stRes.students.some((s) => s.id === id)));
-      setSelectedClassIds((prev) => prev.filter((id) => cRes.classes.some((c) => c.id === id)));
-      setSelectedSubjectIds((prev) => prev.filter((id) => sRes.subjects.some((s) => s.id === id)));
-      if (!newStu.classId && cRes.classes[0]) {
-        setNewStu((prev) => ({ ...prev, classId: cRes.classes[0].id }));
+      const nextClasses = Array.isArray(cRes?.classes) ? cRes.classes : [];
+      const nextSubjects = Array.isArray(sRes?.subjects) ? sRes.subjects : [];
+      const nextStudents = Array.isArray(stRes?.students) ? stRes.students : [];
+      setClasses(nextClasses);
+      setSubjects(nextSubjects);
+      setStudents(nextStudents);
+      setSelectedStudentIds((prev) => prev.filter((id) => nextStudents.some((s) => s.id === id)));
+      setSelectedClassIds((prev) => prev.filter((id) => nextClasses.some((c) => c.id === id)));
+      setSelectedSubjectIds((prev) => prev.filter((id) => nextSubjects.some((s) => s.id === id)));
+      if (!newStu.classId && nextClasses[0]) {
+        setNewStu((prev) => ({ ...prev, classId: nextClasses[0].id }));
       }
     } catch (err) {
       setBanner({ type: 'err', text: err instanceof Error ? err.message : 'Gagal memuat data.' });
@@ -2501,10 +2504,11 @@ export const StudentsAndPhotosPanel: React.FC<{ isAdmin: boolean }> = ({ isAdmin
                   <label className="block text-xs font-semibold text-slate-700 mb-1">Kategori</label>
                   <select
                     value={msgCategory}
-                    onChange={(e) => setMsgCategory(e.target.value as 'pesan' | 'peringatan' | 'instruksi' | 'kesan')}
+                    onChange={(e) => setMsgCategory(e.target.value as 'pesan' | 'pengumuman' | 'peringatan' | 'instruksi' | 'kesan')}
                     className="w-full min-h-[44px] px-3 py-2 rounded-xl border border-slate-300 bg-white text-sm"
                   >
-                    <option value="pesan">Pesan / Pengumuman</option>
+                    <option value="pengumuman">Pengumuman Penting</option>
+                    <option value="pesan">Pesan / Informasi</option>
                     <option value="instruksi">Instruksi Teknis</option>
                     <option value="peringatan">Peringatan / Teguran</option>
                     <option value="kesan">Kesan &amp; Catatan</option>
