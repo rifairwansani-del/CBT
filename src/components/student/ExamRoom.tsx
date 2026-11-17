@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertTriangle,
   Camera,
+  CameraOff,
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
@@ -9,8 +10,11 @@ import {
   Flag,
   Grid,
   Lock,
+  Maximize2,
   MessageSquare,
   Send,
+  ShieldAlert,
+  VolumeX,
   Wifi,
   WifiOff,
   X,
@@ -22,6 +26,13 @@ import {
   withAuthTokenUrl,
   type QueuedAnswerItem,
 } from '../../lib/api.ts';
+import {
+  DEFAULT_VIOLATION_POLICY_CLIENT,
+  desktopSiren,
+  detectClientDeviceInfo,
+  detectRootOrEmulatorClient,
+  getViolationLabel,
+} from '../../lib/violationCatalog.ts';
 import { MathRenderer } from '../MathRenderer.tsx';
 import { StudentAvatar } from '../StudentAvatar.tsx';
 import type { ActiveExamPayload, AuthUser, ChatMessageItem, InstitutionBranding } from '../../types/cbt.ts';
@@ -73,11 +84,18 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
 
   const [sessionStatus, setSessionStatus] = useState(session.status);
   const [lockReason, setLockReason] = useState<string | null>(session.lockReason);
+  const [lockedUntil, setLockedUntil] = useState<string | null>(session.lockedUntil ?? null);
+  const [lockCountdownSec, setLockCountdownSec] = useState<number | null>(null);
   const [violationCount, setViolationCount] = useState(session.violationCount);
+  const [violationPoints, setViolationPoints] = useState(session.violationPoints ?? 0);
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('saved');
   const [pendingQueueCount, setPendingQueueCount] = useState(() => Object.keys(loadOfflineAnswerQueue(session.id)).length);
   const [liveNotice, setLiveNotice] = useState<{ title: string; text: string; tone: 'info' | 'warn' } | null>(null);
+  const [nonPunitiveToast, setNonPunitiveToast] = useState<string | null>(null);
+  const [desktopRedAlert, setDesktopRedAlert] = useState<{ eventType: string; message: string; pointsAdded: number } | null>(null);
+  const [cameraBlockedReason, setCameraBlockedReason] = useState<string | null>(null);
+  const [isFullscreenActive, setIsFullscreenActive] = useState(() => Boolean(typeof document !== 'undefined' && document.fullscreenElement));
 
   const [showNavigator, setShowNavigator] = useState(false);
   const [showSubmitModal, setShowSubmitModal] = useState(false);
@@ -90,24 +108,65 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
   const [chatInput, setChatInput] = useState('');
   const [unreadChat, setUnreadChat] = useState(0);
 
+  const [activeCameraStream, setActiveCameraStream] = useState<MediaStream | null>(cameraStream);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const syncInFlightRef = useRef(false);
-  const lastViolationAtRef = useRef(0);
+  const lastEventTimesRef = useRef<Record<string, number>>({});
+  const awayStartedAtRef = useRef<number | null>(null);
+  const lastAwayLogIdRef = useRef<string | null>(null);
+  const intentionalExitRef = useRef(false);
+  const wifiOfflineTimerRef = useRef<number | null>(null);
+  const rootCheckedRef = useRef(false);
+  const cameraDownReportedRef = useRef(false);
+  const cameraCoveredReportedRef = useRef(false);
 
-  // Attach camera stream if provided
+  const policy = useMemo(() => initialPayload.violationPolicy || DEFAULT_VIOLATION_POLICY_CLIENT, [initialPayload.violationPolicy]);
+  const deviceInfo = useMemo(() => detectClientDeviceInfo(), []);
+
+  const showToastNotice = useCallback((msg: string) => {
+    setNonPunitiveToast(msg);
+  }, []);
+
   useEffect(() => {
-    if (videoRef.current && cameraStream) {
-      videoRef.current.srcObject = cameraStream;
+    if (!nonPunitiveToast) return;
+    const t = window.setTimeout(() => setNonPunitiveToast(null), 4500);
+    return () => window.clearTimeout(t);
+  }, [nonPunitiveToast]);
+
+  // Sync cameraStream prop into local state & attach to video element
+  useEffect(() => {
+    setActiveCameraStream(cameraStream);
+  }, [cameraStream]);
+
+  useEffect(() => {
+    if (videoRef.current && activeCameraStream) {
+      videoRef.current.srcObject = activeCameraStream;
     }
+  }, [activeCameraStream]);
+
+  useEffect(() => {
     return () => {
-      if (cameraStream) {
-        cameraStream.getTracks().forEach((t) => t.stop());
+      desktopSiren.stop();
+      if (activeCameraStream) {
+        activeCameraStream.getTracks().forEach((t) => t.stop());
       }
       pcRef.current?.close();
     };
-  }, [cameraStream]);
+  }, [activeCameraStream]);
+
+  const requestCameraRecovery = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 320 }, height: { ideal: 240 }, facingMode: 'user' }, audio: false });
+      setActiveCameraStream(stream);
+      cameraDownReportedRef.current = false;
+      cameraCoveredReportedRef.current = false;
+      setCameraBlockedReason(null);
+    } catch {
+      showToastNotice('Izin kamera masih ditolak atau perangkat kamera belum tersambung.');
+    }
+  };
 
   // Flush pending offline answer queue to server
   const flushAnswerQueue = useCallback(async () => {
@@ -204,38 +263,70 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
     return () => clearInterval(interval);
   }, [clockOffsetMs, serverEndAt, session.id, sessionStatus, onExitExam]);
 
-  // Periodic heartbeat every 15s (checks unlock status & syncs server clock)
-  useEffect(() => {
-    const hb = setInterval(async () => {
-      try {
-        const res = await apiFetch<{
-          serverTime: string;
-          serverEndAt?: string;
-          status: string;
-          lockReason: string | null;
-          violationCount: number;
-        }>(`/api/student/sessions/${session.id}/heartbeat`, { method: 'POST' });
-        setClockOffsetMs(new Date(res.serverTime).getTime() - Date.now());
-        if (res.serverEndAt) setServerEndAt(res.serverEndAt);
-        setSessionStatus(res.status);
-        setLockReason(res.lockReason);
-        setViolationCount(res.violationCount);
-        setIsOnline(true);
-        if (res.status === 'expired' || res.status === 'submitted') {
-          onExitExam();
-        }
-      } catch (err) {
-        const status = (err as { status?: number }).status;
-        if (status === 404) {
-          saveOfflineAnswerQueue(session.id, {});
-          onExitExam();
-          return;
-        }
-        setIsOnline(false);
+  // Periodic heartbeat every 15s (checks auto-unlock, manual unlock status & syncs server clock)
+  const triggerHeartbeat = useCallback(async () => {
+    try {
+      const res = await apiFetch<{
+        serverTime: string;
+        serverEndAt?: string;
+        status: string;
+        lockReason: string | null;
+        lockedUntil?: string | null;
+        violationCount: number;
+        violationPoints?: number;
+      }>(`/api/student/sessions/${session.id}/heartbeat`, { method: 'POST' });
+      setClockOffsetMs(new Date(res.serverTime).getTime() - Date.now());
+      if (res.serverEndAt) setServerEndAt(res.serverEndAt);
+      setSessionStatus(res.status);
+      setLockReason(res.lockReason);
+      setLockedUntil(res.lockedUntil ?? null);
+      setViolationCount(res.violationCount);
+      if (typeof res.violationPoints === 'number') setViolationPoints(res.violationPoints);
+      setIsOnline(true);
+      if (res.status === 'expired' || res.status === 'submitted') {
+        intentionalExitRef.current = true;
+        onExitExam();
       }
+    } catch (err) {
+      const status = (err as { status?: number }).status;
+      if (status === 404) {
+        saveOfflineAnswerQueue(session.id, {});
+        intentionalExitRef.current = true;
+        onExitExam();
+        return;
+      }
+      setIsOnline(false);
+    }
+  }, [session.id, onExitExam]);
+
+  useEffect(() => {
+    const hb = setInterval(() => {
+      triggerHeartbeat();
     }, 15000);
     return () => clearInterval(hb);
-  }, [session.id, onExitExam]);
+  }, [triggerHeartbeat]);
+
+  // Auto-Unlock Countdown Timer while locked
+  useEffect(() => {
+    if (sessionStatus !== 'locked' || !lockedUntil) {
+      setLockCountdownSec(null);
+      return;
+    }
+    let autoTriggered = false;
+    const updateCountdown = () => {
+      const serverNowMs = Date.now() + clockOffsetMs;
+      const targetMs = new Date(lockedUntil).getTime();
+      const secs = Math.max(0, Math.ceil((targetMs - serverNowMs) / 1000));
+      setLockCountdownSec(secs);
+      if (secs <= 0 && !autoTriggered) {
+        autoTriggered = true;
+        triggerHeartbeat();
+      }
+    };
+    updateCountdown();
+    const t = window.setInterval(updateCountdown, 1000);
+    return () => window.clearInterval(t);
+  }, [sessionStatus, lockedUntil, clockOffsetMs, triggerHeartbeat]);
 
   // WebSocket for instant lock/unlock/reset/time-extension, chat, and WebRTC camera stream requests
   useEffect(() => {
@@ -250,13 +341,21 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
         if (msg.type === 'session:locked') {
           setSessionStatus('locked');
           setLockReason(msg.lockReason || 'Sesi dikunci sementara oleh pengawas/admin.');
+          if (msg.lockedUntil !== undefined) setLockedUntil(msg.lockedUntil || null);
         } else if (msg.type === 'session:unlocked') {
           setSessionStatus('in_progress');
           setLockReason(null);
+          setLockedUntil(null);
+          setLockCountdownSec(null);
+          if (msg.autoUnlocked) {
+            showToastNotice('Kunci sesi Anda telah terbuka secara otomatis. Silakan lanjutkan ujian dengan tertib.');
+          }
           flushAnswerQueue();
         } else if (msg.type === 'session:reset_violations') {
           setViolationCount(0);
+          setViolationPoints(0);
           setLockReason(null);
+          setLockedUntil(null);
           if (msg.status) setSessionStatus(msg.status);
           setLiveNotice({
             title: 'Pelanggaran Direset',
@@ -273,8 +372,10 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
           });
         } else if (msg.type === 'session:reset_exam') {
           saveOfflineAnswerQueue(session.id, {});
+          intentionalExitRef.current = true;
           onExitExam();
         } else if (msg.type === 'session:force_submitted') {
+          intentionalExitRef.current = true;
           onExitExam();
         } else if (msg.type === 'student:message' && msg.message) {
           const item = msg.message as { title?: string; message: string; sender_name?: string; category?: string };
@@ -289,13 +390,13 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
             setUnreadChat((c) => c + 1);
           }
         } else if (msg.type === 'camera:start_stream') {
-          if (!cameraStream) {
+          if (!activeCameraStream) {
             ws.send(JSON.stringify({ type: 'camera:status', available: false, reason: 'Kamera tidak diaktifkan atau tidak tersedia pada perangkat siswa.' }));
             return;
           }
           const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
           pcRef.current = pc;
-          cameraStream.getTracks().forEach((track) => pc.addTrack(track, cameraStream));
+          activeCameraStream.getTracks().forEach((track) => pc.addTrack(track, activeCameraStream));
           pc.onicecandidate = (e) => {
             if (e.candidate && ws.readyState === WebSocket.OPEN) {
               ws.send(JSON.stringify({ type: 'webrtc:ice', candidate: e.candidate }));
@@ -320,7 +421,7 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
     return () => {
       ws.close();
     };
-  }, [session.id, session.examId, cameraStream, flushAnswerQueue, onExitExam, showChat]);
+  }, [session.id, session.examId, activeCameraStream, flushAnswerQueue, onExitExam, showChat, showToastNotice]);
 
   // Load initial chat history
   useEffect(() => {
@@ -329,64 +430,350 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
       .catch(() => {});
   }, [session.examId, user.id]);
 
-  // Auto-Lock Observed Browser Event Listeners
-  useEffect(() => {
-    if (!session.autoLockEnabled) return;
+  // Report structured device-aware violation to backend
+  const reportObservedEvent = useCallback(
+    async (
+      eventType: string,
+      details: Record<string, unknown> = {},
+      options?: { trackAway?: boolean; debounceMs?: number }
+    ): Promise<string | null> => {
+      if (eventType === 'tombol_back') {
+        showToastNotice('Tombol Kembali (Back) ditolak selama ujian berlangsung dan tidak dihitung sebagai pelanggaran.');
+        return null;
+      }
 
-    const reportObservedEvent = async (eventType: string, details: Record<string, unknown>) => {
       const now = Date.now();
-      if (now - lastViolationAtRef.current < 2500) return; // debounce duplicate blur + visibilitychange
-      lastViolationAtRef.current = now;
-      if (sessionStatus === 'locked' || sessionStatus === 'submitted') return;
+      const debounceMs = options?.debounceMs ?? 2200;
+      const prevTs = lastEventTimesRef.current[eventType] || 0;
+      if (now - prevTs < debounceMs) return null;
+      lastEventTimesRef.current[eventType] = now;
+
+      if (sessionStatus === 'locked' || sessionStatus === 'submitted' || sessionStatus === 'expired') {
+        return null;
+      }
+
+      if (options?.trackAway && !awayStartedAtRef.current) {
+        awayStartedAtRef.current = now;
+      }
 
       try {
         const res = await apiFetch<{
+          id?: string | null;
+          ignored?: boolean;
           status: string;
           violationCount: number;
+          violationPoints?: number;
           locked: boolean;
           lockReason: string | null;
+          lockedUntil?: string | null;
+          isExcused?: boolean;
+          excuseReason?: string | null;
+          pointsAdded?: number;
+          triggerSirenRedScreen?: boolean;
         }>(`/api/student/sessions/${session.id}/violations`, {
           method: 'POST',
-          body: JSON.stringify({ eventType, details }),
+          body: JSON.stringify({
+            eventType,
+            deviceType: deviceInfo.deviceType,
+            deviceBrand: deviceInfo.deviceBrand,
+            details: { ...details, osLabel: deviceInfo.osLabel, isNativeXambro: deviceInfo.isNativeXambro },
+          }),
         });
+
+        if (res.ignored) return null;
+
         setViolationCount(res.violationCount);
+        if (typeof res.violationPoints === 'number') setViolationPoints(res.violationPoints);
+        if (options?.trackAway && res.id) {
+          lastAwayLogIdRef.current = res.id;
+        }
+
+        if (res.isExcused && res.excuseReason) {
+          showToastNotice(`Kejadian "${getViolationLabel(eventType)}" tercatat namun ${res.excuseReason}.`);
+        }
+
+        // Desktop Red Screen + Siren Alert for Keluar dari jendela ujian (Alt+Tab / Minimize / Blur)
+        if (!res.isExcused && res.triggerSirenRedScreen && deviceInfo.deviceType === 'desktop') {
+          setDesktopRedAlert({
+            eventType,
+            message: `Terdeteksi ${getViolationLabel(eventType)} pada perangkat Desktop. Segera kembali fokus ke jendela ujian!`,
+            pointsAdded: res.pointsAdded ?? 0,
+          });
+          desktopSiren.start(10000);
+        }
+
         if (res.locked) {
           setSessionStatus('locked');
           setLockReason(res.lockReason);
+          setLockedUntil(res.lockedUntil ?? null);
         }
+
+        return res.id ?? null;
       } catch {
-        // ignore if offline
+        return null;
+      }
+    },
+    [deviceInfo, session.id, sessionStatus, showToastNotice]
+  );
+
+  // Flush away duration when student returns to active window/tab
+  const flushAwayDuration = useCallback(async () => {
+    const startedAt = awayStartedAtRef.current;
+    const logId = lastAwayLogIdRef.current;
+    awayStartedAtRef.current = null;
+    lastAwayLogIdRef.current = null;
+    if (!startedAt || !logId) return;
+    const durationSeconds = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
+    try {
+      await apiFetch(`/api/student/sessions/${session.id}/violations/${logId}/duration`, {
+        method: 'PATCH',
+        body: JSON.stringify({ durationSeconds }),
+      });
+    } catch {
+      // ignore if offline
+    }
+  }, [session.id]);
+
+  // Tombol Back Blocker (never counts as a violation — strictly rejected cleanly)
+  useEffect(() => {
+    if (policy.blockBackNavigation === false || sessionStatus !== 'in_progress') return;
+    try {
+      window.history.pushState({ cbtBackGuard: true }, '', window.location.href);
+    } catch {
+      // ignore history errors
+    }
+
+    const onPopState = () => {
+      try {
+        window.history.pushState({ cbtBackGuard: true }, '', window.location.href);
+      } catch {
+        // ignore
+      }
+      showToastNotice('Tombol Kembali (Back) ditolak selama ujian berlangsung dan tidak dihitung sebagai pelanggaran.');
+    };
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.altKey && e.key === 'ArrowLeft') || e.key === 'BrowserBack') {
+        e.preventDefault();
+        showToastNotice('Tombol Kembali (Back) ditolak selama ujian berlangsung dan tidak dihitung sebagai pelanggaran.');
       }
     };
 
+    window.addEventListener('popstate', onPopState);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('popstate', onPopState);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [policy.blockBackNavigation, sessionStatus, showToastNotice]);
+
+  // Root / Emulator detection on Android launch
+  useEffect(() => {
+    if (rootCheckedRef.current || sessionStatus !== 'in_progress') return;
+    rootCheckedRef.current = true;
+    const check = detectRootOrEmulatorClient();
+    if (check.suspicious) {
+      reportObservedEvent('perangkat_root_atau_emulator', { reasons: check.reasons }, { debounceMs: 60000 });
+    }
+  }, [sessionStatus, reportObservedEvent]);
+
+  // Device-aware focus, visibility, fullscreen, split-screen, refresh, and native Xambro bridge listeners
+  useEffect(() => {
+    if (!session.autoLockEnabled) return;
+
     const onVisibility = () => {
       if (document.hidden) {
-        reportObservedEvent('perpindahan_tab_atau_halaman_tersembunyi', { hidden: true });
+        const eventType =
+          deviceInfo.deviceType === 'android'
+            ? 'keluar_aplikasi'
+            : deviceInfo.deviceType === 'ios_ipad' || deviceInfo.deviceType === 'mobile_web'
+            ? 'meninggalkan_halaman_ujian'
+            : 'keluar_jendela_ujian';
+        reportObservedEvent(eventType, { hidden: true, source: 'visibilitychange' }, { trackAway: true });
+      } else {
+        flushAwayDuration();
       }
     };
+
     const onBlur = () => {
-      reportObservedEvent('kehilangan_fokus_jendela', { hasFocus: document.hasFocus() });
+      if (document.hidden) return;
+      const eventType =
+        deviceInfo.deviceType === 'android'
+          ? 'jendela_lain_di_atas_aplikasi'
+          : deviceInfo.deviceType === 'desktop'
+          ? 'keluar_jendela_ujian'
+          : 'meninggalkan_halaman_ujian';
+      reportObservedEvent(eventType, { hasFocus: false, source: 'window_blur' }, { trackAway: true });
     };
-    const onFullscreen = () => {
-      if (session.requireFullscreen && !document.fullscreenElement) {
-        reportObservedEvent('keluar_mode_layar_penuh', { fullscreen: false });
+
+    const onFocus = () => {
+      if (!document.hidden) {
+        flushAwayDuration();
       }
+    };
+
+    const onFullscreen = () => {
+      const active = Boolean(document.fullscreenElement);
+      setIsFullscreenActive(active);
+      if (session.requireFullscreen && !active && (deviceInfo.deviceType === 'desktop' || deviceInfo.deviceType !== 'android' || !deviceInfo.isNativeXambro)) {
+        reportObservedEvent('keluar_fullscreen', { fullscreen: false });
+      }
+    };
+
+    // Split screen / floating window check (Android & Web/iPad)
+    const onResize = () => {
+      if (sessionStatus !== 'in_progress') return;
+      const availW = window.screen?.availWidth || window.innerWidth;
+      const availH = window.screen?.availHeight || window.innerHeight;
+      if (availW <= 0 || availH <= 0) return;
+
+      const isAndroidOrTouch = deviceInfo.deviceType === 'android' || deviceInfo.deviceType === 'ios_ipad' || deviceInfo.deviceType === 'mobile_web';
+      if (!isAndroidOrTouch) return;
+
+      const widthRatio = window.innerWidth / availW;
+      const heightRatio = window.innerHeight / availH;
+      const areaRatio = (window.innerWidth * window.innerHeight) / (availW * availH);
+
+      // Side-by-side split screen or small floating popup window
+      if ((widthRatio < 0.7 || heightRatio < 0.62) && areaRatio < 0.66) {
+        reportObservedEvent(
+          'layar_terbagi_split_screen',
+          {
+            innerWidth: window.innerWidth,
+            innerHeight: window.innerHeight,
+            availWidth: availW,
+            availHeight: availH,
+          },
+          { debounceMs: 5000 }
+        );
+      }
+    };
+
+    // Desktop & Web refresh / close page beacon
+    const onUnloadOrHide = () => {
+      if (intentionalExitRef.current || sessionStatus !== 'in_progress') return;
+      if (deviceInfo.deviceType === 'android' && deviceInfo.isNativeXambro) return;
+      try {
+        fetch(withAuthTokenUrl(`/api/student/sessions/${session.id}/violations`), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            eventType: 'tutup_atau_refresh_halaman',
+            deviceType: deviceInfo.deviceType,
+            deviceBrand: deviceInfo.deviceBrand,
+            details: { source: 'beforeunload_pagehide' },
+          }),
+          keepalive: true,
+        }).catch(() => {});
+      } catch {
+        // ignore keepalive failure on unload
+      }
+    };
+
+    // Native Xambro / Android WebView bridge event hook
+    const onXambroBridgeEvent = (evt: Event) => {
+      const custom = evt as CustomEvent<{ eventType?: string; type?: string; details?: Record<string, unknown> }>;
+      const rawType = custom.detail?.eventType || custom.detail?.type;
+      if (!rawType) return;
+      if (rawType === 'tombol_back') {
+        showToastNotice('Tombol Kembali (Back) ditolak sistem dan tidak pernah dihitung sebagai pelanggaran.');
+        return;
+      }
+      const isAway = rawType === 'keluar_aplikasi' || rawType === 'tombol_home';
+      reportObservedEvent(rawType, custom.detail?.details || { source: 'xambro_bridge' }, {
+        trackAway: isAway,
+        debounceMs: rawType === 'tombol_home' ? 1200 : 2000,
+      });
     };
 
     document.addEventListener('visibilitychange', onVisibility);
     window.addEventListener('blur', onBlur);
+    window.addEventListener('focus', onFocus);
     document.addEventListener('fullscreenchange', onFullscreen);
+    window.addEventListener('resize', onResize);
+    window.addEventListener('pagehide', onUnloadOrHide);
+    window.addEventListener('beforeunload', onUnloadOrHide);
+    window.addEventListener('xambro:event', onXambroBridgeEvent);
+
     return () => {
       document.removeEventListener('visibilitychange', onVisibility);
       window.removeEventListener('blur', onBlur);
+      window.removeEventListener('focus', onFocus);
       document.removeEventListener('fullscreenchange', onFullscreen);
+      window.removeEventListener('resize', onResize);
+      window.removeEventListener('pagehide', onUnloadOrHide);
+      window.removeEventListener('beforeunload', onUnloadOrHide);
+      window.removeEventListener('xambro:event', onXambroBridgeEvent);
     };
-  }, [session.autoLockEnabled, session.requireFullscreen, session.id, sessionStatus]);
+  }, [
+    session.autoLockEnabled,
+    session.requireFullscreen,
+    session.id,
+    sessionStatus,
+    deviceInfo,
+    reportObservedEvent,
+    flushAwayDuration,
+    showToastNotice,
+  ]);
 
-  // Lightweight On-Device AI Proctoring Analyzer (Indicators ONLY — never locks or accuses)
+  // Exam WiFi Disconnect (> 10s grace) & Network Type Change Monitoring (Android & Desktop)
   useEffect(() => {
-    if (!session.proctoring.enabled || !cameraStream) return;
-    let consecutiveAnomalies = 0;
+    if (!session.requireExamWifi || sessionStatus !== 'in_progress') return;
+    const graceMs = Math.max(5, policy.wifiDisconnectGraceSeconds || 10) * 1000;
+
+    const handleOfflineCheck = () => {
+      if (wifiOfflineTimerRef.current) return;
+      wifiOfflineTimerRef.current = window.setTimeout(() => {
+        wifiOfflineTimerRef.current = null;
+        if (!navigator.onLine) {
+          reportObservedEvent(
+            'keluar_wifi_ujian',
+            { reason: 'offline_timeout', graceSeconds: graceMs / 1000, allowedWifiSsid: session.allowedWifiSsid || '' },
+            { debounceMs: 12000 }
+          );
+        }
+      }, graceMs);
+    };
+
+    const handleBackOnline = () => {
+      if (wifiOfflineTimerRef.current) {
+        window.clearTimeout(wifiOfflineTimerRef.current);
+        wifiOfflineTimerRef.current = null;
+      }
+    };
+
+    type NetworkInfoLike = { type?: string; effectiveType?: string; addEventListener?: (t: string, cb: () => void) => void; removeEventListener?: (t: string, cb: () => void) => void };
+    const conn = (navigator as unknown as { connection?: NetworkInfoLike }).connection;
+    const onConnChange = () => {
+      if (conn?.type && conn.type !== 'wifi' && conn.type !== 'ethernet' && conn.type !== 'unknown') {
+        reportObservedEvent(
+          'keluar_wifi_ujian',
+          { reason: 'network_type_switched', connectionType: conn.type, allowedWifiSsid: session.allowedWifiSsid || '' },
+          { debounceMs: 10000 }
+        );
+      }
+    };
+
+    window.addEventListener('offline', handleOfflineCheck);
+    window.addEventListener('online', handleBackOnline);
+    conn?.addEventListener?.('change', onConnChange);
+    if (!navigator.onLine) handleOfflineCheck();
+
+    return () => {
+      window.removeEventListener('offline', handleOfflineCheck);
+      window.removeEventListener('online', handleBackOnline);
+      conn?.removeEventListener?.('change', onConnChange);
+      handleBackOnline();
+    };
+  }, [session.requireExamWifi, session.allowedWifiSsid, sessionStatus, policy.wifiDisconnectGraceSeconds, reportObservedEvent]);
+
+  // Camera Enforcement & Lightweight On-Device AI Proctoring Analyzer
+  useEffect(() => {
+    const needsCamera = Boolean(session.requireCamera || session.proctoring.enabled);
+    if (!needsCamera) return;
+
+    let consecutiveDarkOrMissing = 0;
+    let consecutiveNoFace = 0;
     const tolerance = Math.max(2, session.proctoring.tolerance || 4);
 
     const canvas = document.createElement('canvas');
@@ -394,34 +781,92 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
     canvas.height = 120;
     const ctx = canvas.getContext('2d');
 
-    // Optional native FaceDetector API (Chromium)
     const FaceDetectorCtor = (window as unknown as { FaceDetector?: new (opts?: unknown) => { detect: (el: HTMLVideoElement) => Promise<unknown[]> } }).FaceDetector;
     const detector = FaceDetectorCtor ? new FaceDetectorCtor({ fastMode: true, maxDetectedFaces: 4 }) : null;
 
     const timer = setInterval(async () => {
-      const video = videoRef.current;
-      if (!video || video.readyState < 2 || sessionStatus !== 'in_progress') return;
+      if (sessionStatus !== 'in_progress') return;
 
-      const track = cameraStream.getVideoTracks()[0];
-      if (!track || track.readyState !== 'live' || track.muted) {
-        apiFetch(`/api/student/sessions/${session.id}/proctoring`, {
-          method: 'POST',
-          body: JSON.stringify({
-            indicatorType: 'kamera_terhenti',
-            confidence: 0.9,
-            note: 'Stream kamera perangkat terhenti atau dibisukan.',
-          }),
-        }).catch(() => {});
+      const track = activeCameraStream?.getVideoTracks()[0];
+      if (!activeCameraStream || !track || track.readyState !== 'live' || track.muted) {
+        if (session.requireCamera) {
+          setCameraBlockedReason('Kamera tidak aktif atau dicabut. Aktifkan kembali kamera untuk membuka soal ujian.');
+          if (!cameraDownReportedRef.current) {
+            cameraDownReportedRef.current = true;
+            reportObservedEvent('kamera_mati_atau_dicabut', { reason: !activeCameraStream ? 'no_stream' : track?.muted ? 'muted' : 'ended' }, { debounceMs: 6000 });
+          }
+        }
+        if (session.proctoring.enabled) {
+          apiFetch(`/api/student/sessions/${session.id}/proctoring`, {
+            method: 'POST',
+            body: JSON.stringify({
+              indicatorType: 'kamera_terhenti',
+              confidence: 0.9,
+              note: 'Stream kamera perangkat terhenti atau dibisukan.',
+            }),
+          }).catch(() => {});
+        }
         return;
       }
 
-      if (detector) {
+      cameraDownReportedRef.current = false;
+      const video = videoRef.current;
+      if (!video || video.readyState < 2) return;
+
+      // Always run luminance check so covered lens ("Kamera tertutup") blocks questions on Android/Desktop
+      let isDarkFrame = false;
+      if (ctx) {
+        try {
+          ctx.drawImage(video, 0, 0, 160, 120);
+          const frame = ctx.getImageData(0, 0, 160, 120).data;
+          let lumSum = 0;
+          for (let i = 0; i < frame.length; i += 16) {
+            lumSum += 0.299 * frame[i] + 0.587 * frame[i + 1] + 0.114 * frame[i + 2];
+          }
+          const avgLum = lumSum / (frame.length / 16);
+          if (avgLum < 12) {
+            isDarkFrame = true;
+          }
+        } catch {
+          // ignore canvas read error
+        }
+      }
+
+      if (isDarkFrame) {
+        consecutiveDarkOrMissing++;
+        if (consecutiveDarkOrMissing >= 2) {
+          setCameraBlockedReason('Lensa kamera depan tertutup atau terlalu gelap. Soal ditutup sementara sampai kamera terlihat kembali.');
+          if (!cameraCoveredReportedRef.current) {
+            cameraCoveredReportedRef.current = true;
+            reportObservedEvent('kamera_tertutup', { avgLuminance: 'low', deviceType: deviceInfo.deviceType }, { debounceMs: 6000 });
+          }
+          if (session.proctoring.enabled) {
+            apiFetch(`/api/student/sessions/${session.id}/proctoring`, {
+              method: 'POST',
+              body: JSON.stringify({
+                indicatorType: 'kamera_gelap_atau_tertutup',
+                confidence: 0.85,
+                note: 'Lensa kamera tertutup atau pencahayaan sangat gelap.',
+              }),
+            }).catch(() => {});
+          }
+        }
+        return;
+      }
+
+      // Camera visible again -> automatically unblock questions
+      consecutiveDarkOrMissing = 0;
+      cameraCoveredReportedRef.current = false;
+      setCameraBlockedReason(null);
+
+      // Optional face indicator when AI proctoring is enabled (non-punitive indicator only)
+      if (session.proctoring.enabled && detector) {
         try {
           const faces = await detector.detect(video);
           if (faces.length === 0) {
-            consecutiveAnomalies++;
-            if (consecutiveAnomalies >= tolerance) {
-              consecutiveAnomalies = 0;
+            consecutiveNoFace++;
+            if (consecutiveNoFace >= tolerance) {
+              consecutiveNoFace = 0;
               apiFetch(`/api/student/sessions/${session.id}/proctoring`, {
                 method: 'POST',
                 body: JSON.stringify({
@@ -432,6 +877,7 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
               }).catch(() => {});
             }
           } else if (faces.length > 1) {
+            consecutiveNoFace = 0;
             apiFetch(`/api/student/sessions/${session.id}/proctoring`, {
               method: 'POST',
               body: JSON.stringify({
@@ -441,41 +887,16 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
               }),
             }).catch(() => {});
           } else {
-            consecutiveAnomalies = 0;
+            consecutiveNoFace = 0;
           }
         } catch {
-          // fallback below if detector fails
-        }
-      } else if (ctx) {
-        // Fallback lightweight luminance check (detects covered/black camera)
-        ctx.drawImage(video, 0, 0, 160, 120);
-        const frame = ctx.getImageData(0, 0, 160, 120).data;
-        let lumSum = 0;
-        for (let i = 0; i < frame.length; i += 16) {
-          lumSum += 0.299 * frame[i] + 0.587 * frame[i + 1] + 0.114 * frame[i + 2];
-        }
-        const avgLum = lumSum / (frame.length / 16);
-        if (avgLum < 12) {
-          consecutiveAnomalies++;
-          if (consecutiveAnomalies >= tolerance) {
-            consecutiveAnomalies = 0;
-            apiFetch(`/api/student/sessions/${session.id}/proctoring`, {
-              method: 'POST',
-              body: JSON.stringify({
-                indicatorType: 'kamera_gelap_atau_tertutup',
-                confidence: 0.68,
-                note: 'Pencahayaan kamera sangat rendah/tertutup untuk ditinjau pengawas.',
-              }),
-            }).catch(() => {});
-          }
-        } else {
-          consecutiveAnomalies = 0;
+          // ignore FaceDetector failure
         }
       }
-    }, 5000);
+    }, 2500);
 
     return () => clearInterval(timer);
-  }, [session.proctoring, session.id, cameraStream, sessionStatus]);
+  }, [session.requireCamera, session.proctoring, session.id, activeCameraStream, sessionStatus, deviceInfo.deviceType, reportObservedEvent]);
 
   const currentQuestion = questions[currentIdx];
 
@@ -554,9 +975,11 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
         return;
       }
 
+      intentionalExitRef.current = true;
       await apiFetch(`/api/student/sessions/${session.id}/submit`, { method: 'POST' });
       onExitExam();
     } catch (err) {
+      intentionalExitRef.current = false;
       setSubmitError(err instanceof Error ? err.message : 'Gagal mengumpulkan ujian.');
       setSubmitting(false);
     }
@@ -700,10 +1123,51 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
         </div>
       )}
 
+      {/* Fullscreen Recovery Banner if required and exited */}
+      {session.requireFullscreen && !isFullscreenActive && sessionStatus === 'in_progress' && (
+        <div className="w-full max-w-6xl mx-auto px-3 sm:px-6 pt-3">
+          <div className="p-3 rounded-xl bg-amber-50 border border-amber-300 text-amber-950 flex flex-wrap items-center justify-between gap-2 text-xs">
+            <span className="font-semibold">Ujian ini mewajibkan mode layar penuh (Fullscreen). Segera kembalikan ke layar penuh.</span>
+            <button
+              type="button"
+              onClick={() => {
+                document.documentElement.requestFullscreen?.().catch(() => {});
+              }}
+              className="px-3 py-1.5 rounded-lg bg-amber-700 hover:bg-amber-800 text-white font-semibold inline-flex items-center gap-1.5"
+            >
+              <Maximize2 className="w-3.5 h-3.5" />
+              <span>Masuk Layar Penuh</span>
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Main Responsive TKA Exam Area */}
       <div className="flex-1 w-full max-w-6xl mx-auto p-3 sm:p-6 pb-24 grid grid-cols-1 lg:grid-cols-12 gap-5 sm:gap-6">
         {/* TKA Crisp White Question Sheet with Colorful Header Accent */}
-        <section className="lg:col-span-8 bg-white border border-indigo-200/80 shadow-sm rounded-2xl overflow-hidden flex flex-col justify-between">
+        <section className="relative lg:col-span-8 bg-white border border-indigo-200/80 shadow-sm rounded-2xl overflow-hidden flex flex-col justify-between">
+          {/* Camera Covered / Disconnected Question Shield */}
+          {cameraBlockedReason && (
+            <div className="absolute inset-0 z-20 bg-slate-900/95 backdrop-blur-md flex items-center justify-center p-6 text-center">
+              <div className="bg-white rounded-2xl max-w-md w-full p-6 space-y-4 border border-amber-300 shadow-2xl">
+                <div className="w-12 h-12 rounded-2xl bg-amber-100 text-amber-700 flex items-center justify-center mx-auto">
+                  <CameraOff className="w-6 h-6" />
+                </div>
+                <h3 className="text-lg font-display font-bold text-slate-900">Soal Ditutup Sementara</h3>
+                <p className="text-xs sm:text-sm text-slate-600 leading-relaxed">{cameraBlockedReason}</p>
+                <div className="flex flex-wrap justify-center gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={requestCameraRecovery}
+                    className="min-h-[42px] px-4 py-2 rounded-xl bg-blue-900 hover:bg-blue-800 text-white text-xs sm:text-sm font-semibold inline-flex items-center gap-1.5"
+                  >
+                    <Camera className="w-4 h-4" />
+                    <span>Aktifkan Ulang Kamera</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
           {currentQuestion ? (
             <div>
               <div className="h-1 w-full bg-gradient-to-r from-blue-600 via-indigo-500 via-violet-500 to-teal-500" aria-hidden="true" />
@@ -1113,18 +1577,18 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
             </div>
           </div>
 
-          {session.proctoring.enabled && (
+          {(session.proctoring.enabled || session.requireCamera) && (
             <div className="bg-white border border-teal-200 rounded-2xl p-4 space-y-2 shadow-sm">
               <div className="flex items-center justify-between text-xs">
                 <span className="font-semibold text-slate-800 flex items-center gap-1.5">
                   <Camera className="w-4 h-4 text-teal-600" />
-                  <span>Kamera Pengawasan</span>
+                  <span>{session.requireCamera ? 'Kamera Wajib Ujian' : 'Kamera Pengawasan'}</span>
                 </span>
-                <span className={cameraStream ? 'font-semibold text-emerald-700' : 'text-slate-500'}>
-                  {cameraStream ? 'Aktif' : 'Tidak Aktif'}
+                <span className={activeCameraStream && !cameraBlockedReason ? 'font-semibold text-emerald-700' : 'text-amber-700 font-semibold'}>
+                  {cameraBlockedReason ? 'Tertutup/Terhenti' : activeCameraStream ? 'Aktif' : 'Tidak Aktif'}
                 </span>
               </div>
-              {cameraStream ? (
+              {activeCameraStream ? (
                 <video
                   ref={videoRef}
                   autoPlay
@@ -1143,7 +1607,7 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
       </div>
 
       {/* Hidden video ref on mobile if camera enabled */}
-      {session.proctoring.enabled && cameraStream && (
+      {(session.proctoring.enabled || session.requireCamera) && activeCameraStream && (
         <video ref={videoRef} autoPlay muted playsInline className="hidden lg:hidden" />
       )}
 
@@ -1336,7 +1800,49 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
         </div>
       )}
 
-      {/* Auto-Lock Overlay (Keeps timer running on server, allows Student-Proctor Chat) */}
+      {/* Non-punitive toast (Back button blocked / Brand exception notice) */}
+      {nonPunitiveToast && (
+        <div className="fixed bottom-20 left-1/2 -translate-x-1/2 z-40 max-w-md w-[92%] bg-slate-900 text-white px-4 py-3 rounded-xl shadow-xl border border-slate-700 flex items-center justify-between gap-3 text-xs">
+          <span>{nonPunitiveToast}</span>
+          <button
+            type="button"
+            onClick={() => setNonPunitiveToast(null)}
+            className="text-slate-300 hover:text-white font-semibold shrink-0"
+          >
+            Tutup
+          </button>
+        </div>
+      )}
+
+      {/* Desktop Red Screen + Siren Alert Overlay (Alt+Tab / Minimize / Blur) */}
+      {desktopRedAlert && sessionStatus === 'in_progress' && (
+        <div className="fixed inset-0 z-50 bg-red-700/95 backdrop-blur-sm flex items-center justify-center p-4 animate-pulse">
+          <div className="bg-white border-4 border-red-900 rounded-2xl max-w-md w-full p-6 space-y-4 text-center shadow-2xl">
+            <div className="w-14 h-14 rounded-2xl bg-red-100 text-red-700 flex items-center justify-center mx-auto">
+              <ShieldAlert className="w-8 h-8" />
+            </div>
+            <h2 className="text-xl font-display font-bold text-red-900">PERINGATAN KEAMANAN LAYAR</h2>
+            <p className="text-sm text-slate-700 leading-relaxed">{desktopRedAlert.message}</p>
+            <div className="p-3 rounded-xl bg-red-50 border border-red-200 text-xs text-red-900 space-y-1 font-mono tabular-nums">
+              <p>Poin Pelanggaran Sesi: {violationPoints} / {session.maxViolations}</p>
+              <p>Kejadian Tercatat: {violationCount}x (+{desktopRedAlert.pointsAdded} poin)</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                desktopSiren.stop();
+                setDesktopRedAlert(null);
+              }}
+              className="w-full min-h-[46px] rounded-xl bg-red-700 hover:bg-red-800 text-white text-sm font-bold inline-flex items-center justify-center gap-2"
+            >
+              <VolumeX className="w-4 h-4" />
+              <span>Matikan Sirene &amp; Kembali ke Ujian</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Auto-Lock Overlay (Keeps timer running on server, shows Auto-Unlock Countdown & allows Proctor Chat) */}
       {sessionStatus === 'locked' && (
         <div className="fixed inset-0 z-40 bg-slate-900/90 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-white border border-rose-200 rounded-2xl max-w-md w-full p-6 space-y-4 text-center shadow-2xl">
@@ -1345,14 +1851,21 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({
             </div>
             <h2 className="text-xl font-display font-bold text-slate-900">Sesi Ujian Terkunci Sementara</h2>
             <p className="text-sm text-slate-600 leading-relaxed">
-              {lockReason || 'Sistem mengamati perpindahan fokus atau tab melebihi batas kebijakan ujian.'}
+              {lockReason || 'Sistem mengamati perpindahan fokus atau pelanggaran melebihi batas kebijakan ujian.'}
             </p>
-            <div className="p-3 rounded-xl bg-rose-50/70 border border-rose-200 text-xs text-slate-700 space-y-1">
+            <div className="p-3 rounded-xl bg-rose-50/70 border border-rose-200 text-xs text-slate-700 space-y-1.5">
               <p>Jawaban Anda yang sudah tersimpan tetap aman dan tidak dihapus.</p>
               <p className="font-semibold text-rose-700 tabular-nums">
                 Perhatian: Waktu ujian tetap berjalan ({formatTimer(remainingSec)} tersisa).
               </p>
-              <p className="font-mono text-slate-600 tabular-nums">Kejadian tercatat: {violationCount} / {session.maxViolations}</p>
+              <p className="font-mono text-slate-600 tabular-nums">
+                Kejadian: {violationCount}x · Akumulasi Poin: {violationPoints} / {session.maxViolations}
+              </p>
+              {lockCountdownSec !== null && (
+                <div className="mt-2 p-2.5 rounded-lg bg-amber-50 border border-amber-300 text-amber-950 font-semibold tabular-nums">
+                  Kunci terbuka otomatis dalam {formatTimer(lockCountdownSec)}
+                </div>
+              )}
             </div>
             <button
               type="button"

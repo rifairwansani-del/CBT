@@ -33,15 +33,33 @@ async function startServer() {
   realtimeHub.attach(server);
 
   if (process.env.NODE_ENV !== 'production') {
-    const { createServer: createViteServer } = await import('vite');
-    const vite = await createViteServer({
-      server: {
-        middlewareMode: true,
-        hmr: false,
-      },
-      appType: 'spa',
+    let viteMiddleware: express.RequestHandler | null = null;
+    const viteReady = import('vite')
+      .then(({ createServer: createViteServer }) =>
+        createViteServer({
+          server: {
+            middlewareMode: true,
+            hmr: false,
+          },
+          appType: 'spa',
+        })
+      )
+      .then((vite) => {
+        viteMiddleware = vite.middlewares;
+      });
+    viteReady.catch((err) => {
+      console.error('Failed to initialize Vite dev middleware:', err);
     });
-    app.use(vite.middlewares);
+    app.use(async (req, res, next) => {
+      try {
+        if (!viteMiddleware) {
+          await viteReady;
+        }
+        return viteMiddleware!(req, res, next);
+      } catch (err) {
+        return next(err);
+      }
+    });
   } else {
     const distDir = path.resolve(process.cwd(), 'dist');
     app.use(express.static(distDir, { maxAge: '1d' }));

@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import {
   AlertCircle,
   CheckCircle2,
+  CreditCard,
   Download,
   Edit3,
   FileArchive,
@@ -11,6 +12,7 @@ import {
   LockOpen,
   MessageSquare,
   Plus,
+  Printer,
   RotateCcw,
   Search,
   Send,
@@ -19,8 +21,42 @@ import {
 } from 'lucide-react';
 import { apiFetch, withAuthTokenUrl } from '../../lib/api.ts';
 import { formatBirthPlaceDate, formatGender } from '../../lib/format.ts';
+import { generateParticipantCardsPDF, type ParticipantCardStudentInput } from '../../lib/pdf.ts';
 import { StudentAvatar } from '../StudentAvatar.tsx';
 import { ConfirmDialog } from './ConfirmDialog.tsx';
+import type { InstitutionBranding, ParticipantCardSettings, SecuritySettings } from '../../types/cbt.ts';
+
+const DEFAULT_BRANDING: InstitutionBranding = {
+  name: 'SMA Negeri Unggul Cipta Jakarta',
+  shortName: 'SMAN Unggul Cipta',
+  address: 'Jl. Pendidikan Terpadu No. 18, Jakarta Selatan',
+  timezone: 'Asia/Jakarta',
+  logoEndpoint: '/api/branding/logo',
+  academicYear: '2026/2027',
+};
+
+const DEFAULT_PARTICIPANT_CARD: ParticipantCardSettings = {
+  enabled: true,
+  allowStudentDownload: true,
+  allowStudentPrint: true,
+  showPinOnCard: false,
+  cardTitle: 'KARTU PESERTA UJIAN',
+  examSessionNote: 'Ruang CBT Terpadu · Sesi Sesuai Jadwal Kelas',
+  cardNote: 'Kartu peserta ini wajib dibawa dan ditunjukkan kepada pengawas ruang saat ujian berlangsung.',
+  signerTitle: 'Ketua Panitia Ujian',
+  signerName: '',
+};
+
+interface AdminExamScheduleBrief {
+  id: string;
+  title: string;
+  subject_name: string;
+  class_ids_json: string;
+  assigned_student_ids_json?: string;
+  class_configs_json?: string;
+  start_at: string;
+  duration_minutes: number;
+}
 
 interface ClassItem {
   id: string;
@@ -104,11 +140,20 @@ interface GenericImportPreview {
   issues: Array<{ row: number; column: string; message: string }>;
 }
 
-export const StudentsAndPhotosPanel: React.FC<{ isAdmin: boolean }> = ({ isAdmin }) => {
-  const [subTab, setSubTab] = useState<'students' | 'photos' | 'classes'>('students');
+export const StudentsAndPhotosPanel: React.FC<{ isAdmin: boolean; branding?: InstitutionBranding }> = ({
+  isAdmin,
+  branding: propBranding,
+}) => {
+  const [subTab, setSubTab] = useState<'students' | 'cards' | 'photos' | 'classes'>('students');
   const [classes, setClasses] = useState<ClassItem[]>([]);
   const [subjects, setSubjects] = useState<SubjectItem[]>([]);
   const [students, setStudents] = useState<StudentRow[]>([]);
+  const [examsList, setExamsList] = useState<AdminExamScheduleBrief[]>([]);
+  const [instBranding, setInstBranding] = useState<InstitutionBranding>(propBranding || DEFAULT_BRANDING);
+  const [cardSettings, setCardSettings] = useState<ParticipantCardSettings>(DEFAULT_PARTICIPANT_CARD);
+  const [adminIncludePinOnCard, setAdminIncludePinOnCard] = useState(false);
+  const [previewStudentId, setPreviewStudentId] = useState<string>('');
+  const [cardBusy, setCardBusy] = useState(false);
   const [search, setSearch] = useState('');
   const [classFilter, setClassFilter] = useState('all');
   const [loading, setLoading] = useState(true);
@@ -196,10 +241,12 @@ export const StudentsAndPhotosPanel: React.FC<{ isAdmin: boolean }> = ({ isAdmin
   const loadAll = async () => {
     setLoading(true);
     try {
-      const [cRes, sRes, stRes] = await Promise.all([
+      const [cRes, sRes, stRes, bRes, eRes] = await Promise.all([
         apiFetch<{ classes?: ClassItem[] }>('/api/admin/classes'),
         apiFetch<{ subjects?: SubjectItem[] }>('/api/admin/subjects'),
         apiFetch<{ students?: StudentRow[] }>('/api/admin/students'),
+        apiFetch<{ institution?: InstitutionBranding; security?: SecuritySettings }>('/api/branding').catch(() => ({} as { institution?: InstitutionBranding; security?: SecuritySettings })),
+        apiFetch<{ exams?: AdminExamScheduleBrief[] }>('/api/admin/exams').catch(() => ({ exams: [] })),
       ]);
       const nextClasses = Array.isArray(cRes?.classes) ? cRes.classes : [];
       const nextSubjects = Array.isArray(sRes?.subjects) ? sRes.subjects : [];
@@ -207,6 +254,12 @@ export const StudentsAndPhotosPanel: React.FC<{ isAdmin: boolean }> = ({ isAdmin
       setClasses(nextClasses);
       setSubjects(nextSubjects);
       setStudents(nextStudents);
+      setExamsList(Array.isArray(eRes?.exams) ? eRes.exams : []);
+      if (bRes?.institution) setInstBranding(bRes.institution);
+      if (bRes?.security?.participantCard) {
+        setCardSettings({ ...DEFAULT_PARTICIPANT_CARD, ...bRes.security.participantCard });
+        setAdminIncludePinOnCard(Boolean(bRes.security.participantCard.showPinOnCard));
+      }
       setSelectedStudentIds((prev) => prev.filter((id) => nextStudents.some((s) => s.id === id)));
       setSelectedClassIds((prev) => prev.filter((id) => nextClasses.some((c) => c.id === id)));
       setSelectedSubjectIds((prev) => prev.filter((id) => nextSubjects.some((s) => s.id === id)));
@@ -223,6 +276,89 @@ export const StudentsAndPhotosPanel: React.FC<{ isAdmin: boolean }> = ({ isAdmin
   useEffect(() => {
     loadAll();
   }, []);
+
+  useEffect(() => {
+    if (propBranding) {
+      setInstBranding(propBranding);
+    }
+  }, [propBranding]);
+
+  const buildCardStudents = (targetRows: StudentRow[]): ParticipantCardStudentInput[] => {
+    return targetRows.map((stu) => {
+      const stuExams = examsList
+        .filter((ex) => {
+          let classIds: string[] = [];
+          let assignedStuIds: string[] = [];
+          let classConfigs: Record<string, { enabled?: boolean }> = {};
+          try {
+            classIds = JSON.parse(ex.class_ids_json || '[]');
+            assignedStuIds = JSON.parse(ex.assigned_student_ids_json || '[]');
+            classConfigs = JSON.parse(ex.class_configs_json || '{}');
+          } catch {
+            // ignore malformed JSON
+          }
+          const enrolled = classIds.includes(stu.class_id) || assignedStuIds.includes(stu.id);
+          if (!enrolled) return false;
+          if (classConfigs[stu.class_id]?.enabled === false) return false;
+          return true;
+        })
+        .map((ex) => {
+          let startAt = ex.start_at;
+          let durationMinutes = ex.duration_minutes;
+          try {
+            const cfg = JSON.parse(ex.class_configs_json || '{}')[stu.class_id];
+            if (cfg?.startAt) startAt = cfg.startAt;
+            if (cfg?.durationMinutes) durationMinutes = Number(cfg.durationMinutes);
+          } catch {
+            // ignore
+          }
+          return {
+            title: ex.title,
+            subjectName: ex.subject_name,
+            startAt,
+            durationMinutes,
+          };
+        });
+
+      return {
+        fullName: stu.full_name,
+        nis: stu.nis,
+        nisn: stu.nisn,
+        birthPlace: stu.birth_place,
+        birthDate: stu.birth_date,
+        gender: stu.gender,
+        email: stu.email,
+        className: stu.class_name,
+        photoUrl: stu.photoUrl,
+        pinDisplay: stu.pin_display,
+        exams: stuExams,
+      };
+    });
+  };
+
+  const handleExportOrPrintCards = async (targetRows: StudentRow[], mode: 'download' | 'print') => {
+    if (targetRows.length === 0) {
+      setBanner({ type: 'err', text: 'Tidak ada siswa yang dipilih untuk dibuatkan kartu peserta.' });
+      return;
+    }
+    setCardBusy(true);
+    setBanner(null);
+    try {
+      await generateParticipantCardsPDF({
+        institution: instBranding,
+        cardSettings: {
+          ...cardSettings,
+          showPinOnCard: adminIncludePinOnCard,
+        },
+        students: buildCardStudents(targetRows),
+        mode,
+      });
+    } catch (err) {
+      setBanner({ type: 'err', text: err instanceof Error ? err.message : 'Gagal menyiapkan PDF kartu peserta.' });
+    } finally {
+      setCardBusy(false);
+    }
+  };
 
   const filteredStudents = students.filter((s) => {
     const matchClass = classFilter === 'all' || s.class_id === classFilter;
@@ -650,6 +786,16 @@ export const StudentsAndPhotosPanel: React.FC<{ isAdmin: boolean }> = ({ isAdmin
           </button>
           <button
             type="button"
+            onClick={() => setSubTab('cards')}
+            className={`min-h-[38px] px-4 py-2 rounded-lg text-xs sm:text-sm font-semibold whitespace-nowrap inline-flex items-center gap-1.5 ${
+              subTab === 'cards' ? 'bg-white text-blue-900 shadow-sm' : 'text-slate-600'
+            }`}
+          >
+            <CreditCard className="w-3.5 h-3.5" />
+            <span>Kartu Peserta Ujian</span>
+          </button>
+          <button
+            type="button"
             onClick={() => setSubTab('photos')}
             className={`min-h-[38px] px-4 py-2 rounded-lg text-xs sm:text-sm font-semibold whitespace-nowrap ${
               subTab === 'photos' ? 'bg-white text-blue-900 shadow-sm' : 'text-slate-600'
@@ -809,6 +955,15 @@ export const StudentsAndPhotosPanel: React.FC<{ isAdmin: boolean }> = ({ isAdmin
                 >
                   <KeyRound className="w-3.5 h-3.5" />
                   <span>Atur PIN / Token</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={cardBusy}
+                  onClick={() => handleExportOrPrintCards(students.filter((s) => selectedStudentIds.includes(s.id)), 'download')}
+                  className="min-h-[38px] px-3 py-1.5 rounded-xl bg-white border border-indigo-200 hover:bg-indigo-50 text-xs font-semibold text-indigo-900 inline-flex items-center gap-1.5 disabled:opacity-50"
+                >
+                  <CreditCard className="w-3.5 h-3.5" />
+                  <span>Unduh Kartu PDF</span>
                 </button>
                 <a
                   href={studentExportUrl}
@@ -1193,6 +1348,302 @@ export const StudentsAndPhotosPanel: React.FC<{ isAdmin: boolean }> = ({ isAdmin
           </div>
         </div>
       )}
+
+      {subTab === 'cards' && (() => {
+        const cardTargetStudents =
+          selectedStudentIds.length > 0
+            ? filteredStudents.filter((s) => selectedStudentIds.includes(s.id))
+            : filteredStudents;
+        const previewRow =
+          filteredStudents.find((s) => s.id === previewStudentId) ||
+          cardTargetStudents[0] ||
+          filteredStudents[0] ||
+          null;
+        const previewCardInput = previewRow ? buildCardStudents([previewRow])[0] : null;
+
+        return (
+          <div className="space-y-5">
+            {/* Toolbar & Settings Status */}
+            <div className="bg-white border border-indigo-200/80 rounded-2xl p-5 space-y-4 shadow-sm">
+              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                <div>
+                  <h2 className="text-base font-display font-bold text-slate-900 flex items-center gap-2">
+                    <CreditCard className="w-5 h-5 text-indigo-600" />
+                    <span>Cetak &amp; Unduh Kartu Peserta Ujian</span>
+                  </h2>
+                  <p className="text-xs text-slate-600 mt-1">
+                    Portal Siswa: <strong>{cardSettings.enabled ? 'Menu Ditampilkan' : 'Menu Disembunyikan'}</strong> ·{' '}
+                    Unduh PDF Siswa: <strong>{cardSettings.allowStudentDownload ? 'Diizinkan' : 'Nonaktif'}</strong> ·{' '}
+                    Cetak Siswa: <strong>{cardSettings.allowStudentPrint ? 'Diizinkan' : 'Nonaktif'}</strong>{' '}
+                    <span className="text-slate-400">(diatur di menu Pengaturan, Log &amp; QA)</span>
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={cardBusy || cardTargetStudents.length === 0}
+                    onClick={() => handleExportOrPrintCards(cardTargetStudents, 'download')}
+                    className="min-h-[42px] px-4 py-2 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 disabled:opacity-50 text-white text-xs sm:text-sm font-semibold inline-flex items-center gap-2 shadow-sm"
+                  >
+                    <Download className="w-4 h-4" />
+                    <span>
+                      {cardBusy
+                        ? 'Menyiapkan PDF...'
+                        : selectedStudentIds.length > 0
+                        ? `Unduh PDF Terpilih (${cardTargetStudents.length})`
+                        : `Unduh PDF (${cardTargetStudents.length} Siswa)`}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    disabled={cardBusy || cardTargetStudents.length === 0}
+                    onClick={() => handleExportOrPrintCards(cardTargetStudents, 'print')}
+                    className="min-h-[42px] px-4 py-2 rounded-xl border border-indigo-200 bg-indigo-50 hover:bg-indigo-100 disabled:opacity-50 text-indigo-900 text-xs sm:text-sm font-semibold inline-flex items-center gap-2"
+                  >
+                    <Printer className="w-4 h-4" />
+                    <span>Cetak Kartu</span>
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-3 border-t border-slate-100">
+                <div className="flex flex-col sm:flex-row sm:items-center gap-2 flex-1">
+                  <div className="relative flex-1 sm:max-w-xs">
+                    <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      value={search}
+                      onChange={(e) => setSearch(e.target.value)}
+                      placeholder="Cari nama atau NIS..."
+                      className="w-full min-h-[40px] pl-9 pr-3 rounded-xl border border-slate-300 text-sm"
+                    />
+                  </div>
+                  <select
+                    value={classFilter}
+                    onChange={(e) => setClassFilter(e.target.value)}
+                    className="min-h-[40px] px-3 rounded-xl border border-slate-300 bg-white text-sm"
+                  >
+                    <option value="all">Semua Kelas ({students.length})</option>
+                    {classes.map((c) => (
+                      <option key={c.id} value={c.id}>{c.name}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <label className="flex items-center gap-2 text-xs font-semibold text-slate-700 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={adminIncludePinOnCard}
+                    onChange={(e) => setAdminIncludePinOnCard(e.target.checked)}
+                    className="w-4 h-4 rounded border-slate-300"
+                  />
+                  <span>Sertakan PIN Ujian saat unduh/cetak Admin</span>
+                </label>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
+              {/* Student Selection List for Card Printing */}
+              <div className="lg:col-span-5 bg-white border border-slate-200 rounded-2xl overflow-hidden">
+                <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between gap-2">
+                  <label className="flex items-center gap-2 text-xs font-bold text-slate-700 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={allVisibleStudentsSelected}
+                      onChange={(e) => toggleAllVisibleStudents(e.target.checked)}
+                      className="w-4 h-4 rounded border-slate-300"
+                    />
+                    <span>Pilih Semua ({filteredStudents.length})</span>
+                  </label>
+                  {selectedStudentIds.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setSelectedStudentIds([])}
+                      className="text-[11px] font-semibold text-indigo-700 hover:underline"
+                    >
+                      Reset Pilihan ({selectedStudentIds.length})
+                    </button>
+                  )}
+                </div>
+                <div className="divide-y divide-slate-100 max-h-[460px] overflow-y-auto">
+                  {filteredStudents.length === 0 ? (
+                    <p className="p-6 text-center text-xs text-slate-500">Tidak ada siswa yang sesuai filter.</p>
+                  ) : (
+                    filteredStudents.map((stu) => {
+                      const isChecked = selectedStudentIds.includes(stu.id);
+                      const isPreviewed = previewRow?.id === stu.id;
+                      return (
+                        <div
+                          key={stu.id}
+                          className={`px-4 py-2.5 flex items-center justify-between gap-2 ${
+                            isPreviewed ? 'bg-indigo-50/70' : 'hover:bg-slate-50'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <input
+                              type="checkbox"
+                              checked={isChecked}
+                              onChange={(e) =>
+                                setSelectedStudentIds((prev) =>
+                                  e.target.checked ? [...prev, stu.id] : prev.filter((id) => id !== stu.id)
+                                )
+                              }
+                              aria-label={`Pilih kartu ${stu.full_name}`}
+                              className="w-4 h-4 rounded border-slate-300 shrink-0"
+                            />
+                            <StudentAvatar photoUrl={stu.photoUrl} fullName={stu.full_name} size="sm" />
+                            <button
+                              type="button"
+                              onClick={() => setPreviewStudentId(stu.id)}
+                              className="min-w-0 text-left"
+                            >
+                              <p className="text-xs font-semibold text-slate-900 truncate">{stu.full_name}</p>
+                              <p className="text-[11px] font-mono text-slate-500 truncate">
+                                {stu.nis} · {stu.class_name}
+                              </p>
+                            </button>
+                          </div>
+                          <div className="flex items-center gap-1 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => handleExportOrPrintCards([stu], 'download')}
+                              title={`Unduh PDF kartu ${stu.full_name}`}
+                              className="p-1.5 rounded-lg border border-slate-200 hover:bg-white text-indigo-700"
+                            >
+                              <Download className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleExportOrPrintCards([stu], 'print')}
+                              title={`Cetak kartu ${stu.full_name}`}
+                              className="p-1.5 rounded-lg border border-slate-200 hover:bg-white text-emerald-700"
+                            >
+                              <Printer className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+
+              {/* Live Official Card Preview */}
+              <div className="lg:col-span-7 bg-white border border-indigo-200 rounded-2xl overflow-hidden shadow-sm">
+                <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between gap-2">
+                  <span className="text-xs font-bold text-slate-700">
+                    Pratinjau Kartu Peserta Ujian {previewRow ? `· ${previewRow.full_name}` : ''}
+                  </span>
+                  <span className="text-[11px] text-slate-500">Format PDF A4 (2 kartu / halaman)</span>
+                </div>
+
+                {!previewRow || !previewCardInput ? (
+                  <div className="p-10 text-center text-xs text-slate-500">
+                    Pilih siswa di sebelah kiri untuk melihat pratinjau kartu peserta.
+                  </div>
+                ) : (
+                  <div className="p-4 sm:p-5">
+                    <div className="border-2 border-indigo-800 rounded-xl overflow-hidden bg-white shadow-xs">
+                      <div className="bg-gradient-to-r from-blue-800 via-indigo-800 to-indigo-900 text-white px-4 py-3 flex items-center gap-3">
+                        <img
+                          src={instBranding.logoEndpoint || '/api/branding/logo'}
+                          alt={instBranding.shortName || instBranding.name}
+                          onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
+                          className="w-10 h-10 rounded-lg bg-white p-0.5 object-contain shrink-0"
+                        />
+                        <div className="min-w-0">
+                          <p className="text-xs font-bold tracking-wide uppercase text-amber-300">
+                            {cardSettings.cardTitle || 'KARTU PESERTA UJIAN'}
+                          </p>
+                          <p className="text-sm font-display font-bold truncate">
+                            {instBranding.name} · TA {instBranding.academicYear}
+                          </p>
+                          <p className="text-[11px] text-sky-100 truncate">{instBranding.address}</p>
+                        </div>
+                      </div>
+
+                      <div className="p-4 space-y-4">
+                        <div className="flex flex-col sm:flex-row sm:items-start gap-4">
+                          <StudentAvatar
+                            photoUrl={previewRow.photoUrl}
+                            fullName={previewRow.full_name}
+                            size="xl"
+                            className="mx-auto sm:mx-0 border-2 border-indigo-100"
+                          />
+                          <div className="min-w-0 flex-1 space-y-1.5">
+                            <p className="font-display font-bold text-slate-900 text-base break-words">
+                              {previewRow.full_name}
+                            </p>
+                            <dl className="space-y-1 text-xs">
+                              <div className="flex gap-2">
+                                <dt className="text-slate-500 w-32 shrink-0">NIS / NISN:</dt>
+                                <dd className="font-mono font-bold text-indigo-950 tabular-nums">{previewRow.nis} / {previewRow.nisn}</dd>
+                              </div>
+                              <div className="flex gap-2">
+                                <dt className="text-slate-500 w-32 shrink-0">Jenis Kelamin:</dt>
+                                <dd className="text-slate-800">{formatGender(previewRow.gender)}</dd>
+                              </div>
+                              <div className="flex gap-2">
+                                <dt className="text-slate-500 w-32 shrink-0">Tempat, Tgl Lahir:</dt>
+                                <dd className="text-slate-800">{formatBirthPlaceDate(previewRow.birth_place, previewRow.birth_date)}</dd>
+                              </div>
+                              <div className="flex gap-2">
+                                <dt className="text-slate-500 w-32 shrink-0">Kelas:</dt>
+                                <dd className="font-semibold text-teal-800">{previewRow.class_name}</dd>
+                              </div>
+                              <div className="flex gap-2">
+                                <dt className="text-slate-500 w-32 shrink-0">Alamat Email:</dt>
+                                <dd className="text-slate-800 break-all">{previewRow.email || '-'}</dd>
+                              </div>
+                              <div className="flex gap-2">
+                                <dt className="text-slate-500 w-32 shrink-0">Ruang / Sesi:</dt>
+                                <dd className="text-slate-800">{cardSettings.examSessionNote || 'Ruang CBT Terpadu'}</dd>
+                              </div>
+                              {adminIncludePinOnCard && (
+                                <div className="flex gap-2">
+                                  <dt className="text-slate-500 w-32 shrink-0">PIN Ujian:</dt>
+                                  <dd className="font-mono font-bold text-indigo-700">{previewRow.pin_display}</dd>
+                                </div>
+                              )}
+                            </dl>
+                          </div>
+                        </div>
+
+                        <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-1">
+                          <p className="text-[11px] font-bold text-indigo-900 uppercase tracking-wide">Jadwal Ujian Terdaftar</p>
+                          {(previewCardInput.exams || []).length === 0 ? (
+                            <p className="text-xs text-slate-500">Mengikuti jadwal resmi kelas pada portal peserta.</p>
+                          ) : (
+                            <ul className="space-y-0.5 text-xs text-slate-700">
+                              {(previewCardInput.exams || []).slice(0, 3).map((ex, i) => (
+                                <li key={i} className="truncate">
+                                  {i + 1}. <strong>{ex.title}</strong> ({ex.subjectName}) · {new Date(ex.startAt).toLocaleString('id-ID', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                        </div>
+
+                        <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 pt-2 border-t border-slate-100 text-[11px] text-slate-600">
+                          <p className="max-w-sm leading-relaxed">{cardSettings.cardNote}</p>
+                          <div className="text-left sm:text-right shrink-0">
+                            <p>{cardSettings.signerTitle || 'Ketua Panitia Ujian'}</p>
+                            <div className="h-8" />
+                            <p className="font-bold text-slate-900">
+                              {cardSettings.signerName?.trim() || '( .................................... )'}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {subTab === 'photos' && (
         <div className="space-y-5">

@@ -37,6 +37,9 @@ interface ExamItem {
   max_violations: number;
   auto_lock_enabled: number;
   require_fullscreen: number;
+  require_camera?: number;
+  require_exam_wifi?: number;
+  allowed_wifi_ssid?: string;
   proctoring_enabled: number;
   proctoring_sensitivity: string;
   proctoring_tolerance: number;
@@ -154,6 +157,9 @@ export const ExamsAndSchedulesPanel: React.FC = () => {
     autoLockEnabled: true,
     maxViolations: 3,
     requireFullscreen: false,
+    requireCamera: false,
+    requireExamWifi: false,
+    allowedWifiSsid: '',
     proctoringEnabled: false,
     proctoringSensitivity: 'sedang',
     proctoringTolerance: 4,
@@ -281,6 +287,9 @@ export const ExamsAndSchedulesPanel: React.FC = () => {
       autoLockEnabled: Boolean(ex.auto_lock_enabled),
       maxViolations: ex.max_violations,
       requireFullscreen: Boolean(ex.require_fullscreen),
+      requireCamera: Boolean(ex.require_camera),
+      requireExamWifi: Boolean(ex.require_exam_wifi),
+      allowedWifiSsid: ex.allowed_wifi_ssid || '',
       proctoringEnabled: Boolean(ex.proctoring_enabled),
       proctoringSensitivity: ex.proctoring_sensitivity || 'sedang',
       proctoringTolerance: ex.proctoring_tolerance || 4,
@@ -815,7 +824,9 @@ export const ExamsAndSchedulesPanel: React.FC = () => {
                     <span>{ex.question_count} soal · {ex.duration_minutes} menit · KKM {ex.passing_score}</span>
                   </div>
                   <p className="text-xs text-slate-500">
-                    Auto-Lock: {ex.auto_lock_enabled ? `Aktif (maks ${ex.max_violations}x)` : 'Nonaktif'} · Kamera AI: {ex.proctoring_enabled ? 'Aktif' : 'Nonaktif'} · Akses:{' '}
+                    Auto-Lock: {ex.auto_lock_enabled ? `Aktif (maks ${ex.max_violations} poin)` : 'Nonaktif'} · Kamera AI: {ex.proctoring_enabled ? 'Aktif' : 'Nonaktif'}
+                    {ex.require_camera ? ' · Kamera Wajib' : ''}
+                    {ex.require_exam_wifi ? ` · WiFi Ujian${ex.allowed_wifi_ssid ? ` (${ex.allowed_wifi_ssid})` : ''}` : ''} · Akses:{' '}
                     <span className="font-medium text-slate-700">
                       {ex.access_token_mode === 'exam_token' && ex.access_token
                         ? `Token Khusus (${ex.access_token})`
@@ -1093,12 +1104,26 @@ export const ExamsAndSchedulesPanel: React.FC = () => {
             {/* Security, Proctoring & Publication */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
               <div className="p-3.5 rounded-xl border border-slate-200 space-y-2">
-                <p className="font-bold text-slate-800">Keamanan &amp; Auto-Lock</p>
+                <p className="font-bold text-slate-800">Keamanan, Kamera Wajib &amp; WiFi Ujian</p>
                 <label className="flex items-center gap-2"><input type="checkbox" checked={form.autoLockEnabled} onChange={(e) => setForm({ ...form, autoLockEnabled: e.target.checked })} /> Aktifkan penguncian otomatis</label>
-                <label className="flex items-center gap-2"><input type="checkbox" checked={form.requireFullscreen} onChange={(e) => setForm({ ...form, requireFullscreen: e.target.checked })} /> Catat keluar layar penuh (fullscreen)</label>
+                <label className="flex items-center gap-2"><input type="checkbox" checked={form.requireFullscreen} onChange={(e) => setForm({ ...form, requireFullscreen: e.target.checked })} /> Wajib layar penuh (Fullscreen)</label>
+                <label className="flex items-center gap-2"><input type="checkbox" checked={form.requireCamera} onChange={(e) => setForm({ ...form, requireCamera: e.target.checked })} /> Wajib kamera aktif (tutup soal jika kamera mati/tertutup)</label>
+                <label className="flex items-center gap-2"><input type="checkbox" checked={form.requireExamWifi} onChange={(e) => setForm({ ...form, requireExamWifi: e.target.checked })} /> Wajib terhubung WiFi ujian (deteksi putus &gt; 10 detik)</label>
+                {form.requireExamWifi && (
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-600 mb-0.5">Nama WiFi / SSID Ujian (Opsional)</label>
+                    <input
+                      type="text"
+                      value={form.allowedWifiSsid}
+                      onChange={(e) => setForm({ ...form, allowedWifiSsid: e.target.value })}
+                      placeholder="Contoh: WIFI-LAB-CBT"
+                      className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 font-mono text-xs"
+                    />
+                  </div>
+                )}
                 <div className="flex items-center gap-2">
-                  <span>Batas kejadian sebelum terkunci:</span>
-                  <input type="number" min={1} max={20} value={form.maxViolations} onChange={(e) => setForm({ ...form, maxViolations: Number(e.target.value) })} className="w-16 px-2 py-1 rounded border border-slate-300 font-mono" />
+                  <span>Batas poin pelanggaran sebelum terkunci:</span>
+                  <input type="number" min={1} max={30} value={form.maxViolations} onChange={(e) => setForm({ ...form, maxViolations: Number(e.target.value) })} className="w-16 px-2 py-1 rounded border border-slate-300 font-mono" />
                 </div>
               </div>
 

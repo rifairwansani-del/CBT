@@ -25,6 +25,49 @@ export interface InstitutionBranding {
   academicYear: string;
 }
 
+export interface ParticipantCardSettings {
+  enabled: boolean;
+  allowStudentDownload: boolean;
+  allowStudentPrint: boolean;
+  showPinOnCard: boolean;
+  cardTitle: string;
+  examSessionNote: string;
+  cardNote: string;
+  signerTitle: string;
+  signerName: string;
+}
+
+export type ViolationDeviceScope = 'Android' | 'Desktop' | 'Web' | 'Android & Web/iPad' | 'Android & Desktop' | 'Desktop & Web' | 'Semua Perangkat';
+
+export type ViolationRuleMode = 'record_only' | 'add_points' | 'instant_lock';
+
+export interface ViolationRuleConfig {
+  code: string;
+  label: string;
+  devices: ViolationDeviceScope;
+  description: string;
+  enabled: boolean;
+  mode: ViolationRuleMode;
+  points: number;
+  autoUnlockMinutes: number; // 0 = manual unlock by admin/pengawas, >0 = auto-unlock after N minutes
+  triggerSirenRedScreen?: boolean;
+  blockQuestionsUntilResolved?: boolean;
+}
+
+export interface GadgetBrandException {
+  brand: string;
+  excusedEventTypes: string[];
+  reasonNote: string;
+  enabled: boolean;
+}
+
+export interface ViolationPolicySettings {
+  rules: ViolationRuleConfig[];
+  brandExceptions: GadgetBrandException[];
+  wifiDisconnectGraceSeconds: number;
+  blockBackNavigation: boolean;
+}
+
 export interface SecuritySettings {
   maxLoginAttempts: number;
   lockoutMinutes: number;
@@ -32,6 +75,8 @@ export interface SecuritySettings {
   maxConcurrentCameraStreams: number;
   showStudentExamHistory?: boolean;
   privacyNotice: string;
+  participantCard?: ParticipantCardSettings;
+  violationPolicy?: ViolationPolicySettings;
 }
 
 export interface AuthUser {
@@ -46,6 +91,7 @@ export interface AuthUser {
   gender?: string;
   email?: string;
   photoLink?: string;
+  pinDisplay?: string;
   classId?: string;
   className?: string;
   hasPhoto?: boolean;
@@ -66,6 +112,9 @@ export interface StudentExamSummary {
   passingScore: number;
   autoLockEnabled: boolean;
   requireFullscreen: boolean;
+  requireCamera?: boolean;
+  requireExamWifi?: boolean;
+  allowedWifiSsid?: string;
   maxViolations: number;
   proctoringEnabled: boolean;
   allowCameraStream: boolean;
@@ -83,7 +132,9 @@ export interface StudentExamSummary {
     serverEndAt: string;
     submittedAt: string | null;
     lockReason: string | null;
+    lockedUntil?: string | null;
     violationCount: number;
+    violationPoints?: number;
   } | null;
   result: {
     finalScore: number;
@@ -111,6 +162,7 @@ export interface StudentExamQuestion {
 
 export interface ActiveExamPayload {
   serverTime: string;
+  violationPolicy?: ViolationPolicySettings;
   session: {
     id: string;
     examId: string;
@@ -121,10 +173,15 @@ export interface ActiveExamPayload {
     startedAt: string;
     serverEndAt: string;
     violationCount: number;
+    violationPoints?: number;
     maxViolations: number;
     autoLockEnabled: boolean;
     requireFullscreen: boolean;
+    requireCamera?: boolean;
+    requireExamWifi?: boolean;
+    allowedWifiSsid?: string;
     lockReason: string | null;
+    lockedUntil?: string | null;
     proctoring: {
       enabled: boolean;
       sensitivity: string;

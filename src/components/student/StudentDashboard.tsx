@@ -9,6 +9,7 @@ import {
   CheckCircle2,
   ClipboardCheck,
   Clock,
+  CreditCard,
   Download,
   Eye,
   EyeOff,
@@ -28,9 +29,22 @@ import {
 } from 'lucide-react';
 import { apiFetch, getDeviceFingerprint, withAuthTokenUrl } from '../../lib/api.ts';
 import { formatBirthPlaceDate, formatGender } from '../../lib/format.ts';
-import { generateStudentRaporPDF } from '../../lib/pdf.ts';
+import { generateParticipantCardsPDF, generateStudentRaporPDF } from '../../lib/pdf.ts';
+import { detectClientDeviceInfo } from '../../lib/violationCatalog.ts';
 import { StudentAvatar } from '../StudentAvatar.tsx';
-import type { ActiveExamPayload, AuthUser, InstitutionBranding, StudentExamSummary, StudentMessageItem } from '../../types/cbt.ts';
+import type { ActiveExamPayload, AuthUser, InstitutionBranding, ParticipantCardSettings, StudentExamSummary, StudentMessageItem } from '../../types/cbt.ts';
+
+const DEFAULT_PARTICIPANT_CARD: ParticipantCardSettings = {
+  enabled: true,
+  allowStudentDownload: true,
+  allowStudentPrint: true,
+  showPinOnCard: false,
+  cardTitle: 'KARTU PESERTA UJIAN',
+  examSessionNote: 'Ruang CBT Terpadu · Sesi Sesuai Jadwal Kelas',
+  cardNote: 'Kartu peserta ini wajib dibawa dan ditunjukkan kepada pengawas ruang saat ujian berlangsung.',
+  signerTitle: 'Ketua Panitia Ujian',
+  signerName: '',
+};
 
 interface StudentDashboardProps {
   user: AuthUser;
@@ -39,7 +53,7 @@ interface StudentDashboardProps {
   onEnterExam: (payload: ActiveExamPayload, cameraStream: MediaStream | null) => void;
 }
 
-type StudentSection = 'ujian' | 'nilai';
+type StudentSection = 'ujian' | 'kartu' | 'nilai';
 
 interface PushToastItem {
   id: string;
@@ -91,6 +105,9 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
   const [selectedResultExam, setSelectedResultExam] = useState<StudentExamSummary | null>(null);
   const [messages, setMessages] = useState<StudentMessageItem[]>([]);
   const [showStudentHistory, setShowStudentHistory] = useState(true);
+  const [participantCard, setParticipantCard] = useState<ParticipantCardSettings>(DEFAULT_PARTICIPANT_CARD);
+  const [studentCardPin, setStudentCardPin] = useState<string | undefined>(user.pinDisplay);
+  const [cardExportBusy, setCardExportBusy] = useState(false);
 
   // Push notifications & server-synchronized clock
   const [serverOffsetMs, setServerOffsetMs] = useState(0);
@@ -166,7 +183,13 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
     setError(null);
     try {
       const [dashRes, msgRes] = await Promise.all([
-        apiFetch<{ serverTime?: string; exams: StudentExamSummary[]; showStudentHistory?: boolean }>('/api/student/dashboard'),
+        apiFetch<{
+          serverTime?: string;
+          exams: StudentExamSummary[];
+          showStudentHistory?: boolean;
+          participantCard?: ParticipantCardSettings;
+          studentPin?: string;
+        }>('/api/student/dashboard'),
         apiFetch<{ messages: StudentMessageItem[] }>('/api/student/messages').catch(() => ({ messages: [] })),
       ]);
       if (dashRes.serverTime) {
@@ -178,10 +201,18 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
         }
       }
       const nextHistoryVisible = dashRes.showStudentHistory !== false;
+      const nextCardCfg: ParticipantCardSettings = {
+        ...DEFAULT_PARTICIPANT_CARD,
+        ...(dashRes.participantCard || {}),
+      };
       setShowStudentHistory(nextHistoryVisible);
-      if (!nextHistoryVisible) {
-        setActiveTab('ujian');
-      }
+      setParticipantCard(nextCardCfg);
+      setStudentCardPin(dashRes.studentPin || user.pinDisplay);
+      setActiveTab((prev) => {
+        if (prev === 'nilai' && !nextHistoryVisible) return 'ujian';
+        if (prev === 'kartu' && nextCardCfg.enabled === false) return 'ujian';
+        return prev;
+      });
       setExams(Array.isArray(dashRes.exams) ? dashRes.exams : []);
       setMessages(Array.isArray(msgRes.messages) ? msgRes.messages : []);
     } catch (err) {
@@ -483,12 +514,28 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
     setStartingExam(true);
     setStartError(null);
 
+    const devInfo = detectClientDeviceInfo();
+    const shouldRequestCamera = Boolean(confirmExam.requireCamera) || (confirmExam.proctoringEnabled && cameraConsent);
     let cameraStream: MediaStream | null = null;
-    if (confirmExam.proctoringEnabled && cameraConsent && navigator.mediaDevices?.getUserMedia) {
+    if (shouldRequestCamera && navigator.mediaDevices?.getUserMedia) {
       try {
         cameraStream = await navigator.mediaDevices.getUserMedia({ video: { width: 320, height: 240, facingMode: 'user' }, audio: false });
       } catch {
         cameraStream = null;
+      }
+    }
+
+    if (confirmExam.requireCamera && !cameraStream) {
+      setStartError('Ujian ini mewajibkan kamera aktif. Izinkan akses kamera depan/webcam perangkat Anda untuk memulai tes.');
+      setStartingExam(false);
+      return;
+    }
+
+    if (confirmExam.requireFullscreen && document.documentElement.requestFullscreen && !document.fullscreenElement) {
+      try {
+        await document.documentElement.requestFullscreen();
+      } catch {
+        // Ignore if browser/iframe blocks programmatic fullscreen; ExamRoom also provides fullscreen button
       }
     }
 
@@ -498,6 +545,8 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
         body: JSON.stringify({
           pin: cleanPin,
           deviceFingerprint: getDeviceFingerprint(),
+          deviceType: devInfo.deviceType,
+          deviceBrand: devInfo.deviceBrand,
           forceTakeover,
         }),
       });
@@ -536,6 +585,18 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
       activeClass: 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-sm shadow-indigo-600/20',
       idleIconClass: 'text-indigo-600',
     },
+    ...(participantCard.enabled !== false
+      ? [
+          {
+            id: 'kartu' as StudentSection,
+            label: 'Kartu Peserta Ujian',
+            count: 1,
+            icon: <CreditCard className="w-4 h-4 shrink-0" />,
+            activeClass: 'bg-gradient-to-r from-sky-600 to-cyan-600 text-white shadow-sm shadow-sky-600/20',
+            idleIconClass: 'text-sky-600',
+          },
+        ]
+      : []),
     ...(showStudentHistory
       ? [
           {
@@ -1312,6 +1373,227 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
                 <div key={i} className="h-44 rounded-xl bg-white border border-indigo-100 animate-pulse p-6" />
               ))}
             </div>
+          ) : activeTab === 'kartu' && participantCard.enabled !== false ? (
+            /* Tab Kartu Peserta Ujian */
+            <div className="space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-base sm:text-lg font-display font-bold text-slate-900">
+                    Kartu Peserta Ujian Resmi
+                  </h2>
+                  <p className="text-xs text-slate-500">
+                    Pastikan identitas dan foto sesuai sebelum mengunduh atau mencetak kartu ujian.
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  {participantCard.allowStudentDownload !== false && (
+                    <button
+                      type="button"
+                      disabled={cardExportBusy}
+                      onClick={async () => {
+                        setCardExportBusy(true);
+                        try {
+                          await generateParticipantCardsPDF({
+                            institution: branding,
+                            cardSettings: participantCard,
+                            students: [
+                              {
+                                fullName: user.fullName,
+                                nis: user.nis || '',
+                                nisn: user.nisn,
+                                birthPlace: user.birthPlace,
+                                birthDate: user.birthDate,
+                                gender: user.gender,
+                                email: user.email,
+                                className: user.className || '',
+                                photoUrl: user.photoUrl,
+                                pinDisplay: studentCardPin,
+                                exams: ongoingAndUpcoming.map((e) => ({
+                                  title: e.title,
+                                  subjectName: e.subjectName,
+                                  startAt: e.startAt,
+                                  durationMinutes: e.durationMinutes,
+                                })),
+                              },
+                            ],
+                            mode: 'download',
+                          });
+                        } finally {
+                          setCardExportBusy(false);
+                        }
+                      }}
+                      className="min-h-[42px] px-4 py-2 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 disabled:opacity-60 text-white text-xs sm:text-sm font-semibold flex items-center gap-2 shadow-sm"
+                    >
+                      <Download className="w-4 h-4" />
+                      <span>{cardExportBusy ? 'Menyiapkan PDF...' : 'Unduh Kartu (PDF)'}</span>
+                    </button>
+                  )}
+                  {participantCard.allowStudentPrint !== false && (
+                    <button
+                      type="button"
+                      disabled={cardExportBusy}
+                      onClick={async () => {
+                        setCardExportBusy(true);
+                        try {
+                          await generateParticipantCardsPDF({
+                            institution: branding,
+                            cardSettings: participantCard,
+                            students: [
+                              {
+                                fullName: user.fullName,
+                                nis: user.nis || '',
+                                nisn: user.nisn,
+                                birthPlace: user.birthPlace,
+                                birthDate: user.birthDate,
+                                gender: user.gender,
+                                email: user.email,
+                                className: user.className || '',
+                                photoUrl: user.photoUrl,
+                                pinDisplay: studentCardPin,
+                                exams: ongoingAndUpcoming.map((e) => ({
+                                  title: e.title,
+                                  subjectName: e.subjectName,
+                                  startAt: e.startAt,
+                                  durationMinutes: e.durationMinutes,
+                                })),
+                              },
+                            ],
+                            mode: 'print',
+                          });
+                        } finally {
+                          setCardExportBusy(false);
+                        }
+                      }}
+                      className="min-h-[42px] px-4 py-2 rounded-xl border border-indigo-200 bg-white hover:bg-indigo-50 disabled:opacity-60 text-indigo-900 text-xs sm:text-sm font-semibold flex items-center gap-2"
+                    >
+                      <Printer className="w-4 h-4" />
+                      <span>Cetak Kartu</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {participantCard.allowStudentDownload === false && participantCard.allowStudentPrint === false && (
+                <div className="p-3.5 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-900">
+                  Pengunduhan dan pencetakan mandiri kartu peserta saat ini dinonaktifkan oleh panitia ujian.
+                </div>
+              )}
+
+              {/* Official Printable Card Visual */}
+              <div className="max-w-2xl bg-white border-2 border-indigo-800 rounded-2xl overflow-hidden shadow-md">
+                <div className="bg-gradient-to-r from-blue-800 via-indigo-800 to-indigo-900 text-white px-5 py-4 flex items-center gap-3.5">
+                  <img
+                    src={branding.logoEndpoint || '/api/branding/logo'}
+                    alt={branding.shortName || branding.name}
+                    referrerPolicy="no-referrer"
+                    onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
+                    className="w-12 h-12 rounded-xl object-contain bg-white p-1 shrink-0 shadow-xs"
+                  />
+                  <div className="min-w-0">
+                    <p className="text-xs font-bold uppercase tracking-wider text-amber-300">
+                      {participantCard.cardTitle || 'KARTU PESERTA UJIAN'}
+                    </p>
+                    <h3 className="text-sm sm:text-base font-display font-bold truncate">
+                      {branding.name} · TA {branding.academicYear}
+                    </h3>
+                    <p className="text-[11px] text-sky-100 truncate">{branding.address}</p>
+                  </div>
+                </div>
+
+                <div className="p-5 sm:p-6 space-y-5">
+                  <div className="flex flex-col sm:flex-row sm:items-start gap-5">
+                    <StudentAvatar
+                      photoUrl={user.photoUrl}
+                      fullName={user.fullName}
+                      size="2xl"
+                      className="mx-auto sm:mx-0 border-2 border-indigo-100 shadow-xs"
+                    />
+                    <div className="min-w-0 flex-1 space-y-2">
+                      <div>
+                        <p className="text-[11px] font-semibold uppercase tracking-wide text-indigo-700">Nama Peserta</p>
+                        <p className="text-lg sm:text-xl font-display font-bold text-slate-900 break-words">
+                          {user.fullName}
+                        </p>
+                      </div>
+                      <dl className="space-y-1.5 text-xs sm:text-sm">
+                        <div className="flex flex-wrap sm:flex-nowrap items-baseline gap-x-2">
+                          <dt className="text-slate-500 sm:w-36 shrink-0">NIS / NISN:</dt>
+                          <dd className="font-mono font-bold text-indigo-950 tabular-nums break-all">{user.nis} / {user.nisn}</dd>
+                        </div>
+                        <div className="flex flex-wrap sm:flex-nowrap items-baseline gap-x-2">
+                          <dt className="text-slate-500 sm:w-36 shrink-0">Jenis Kelamin:</dt>
+                          <dd className="text-slate-800">{formattedGender}</dd>
+                        </div>
+                        <div className="flex flex-wrap sm:flex-nowrap items-baseline gap-x-2">
+                          <dt className="text-slate-500 sm:w-36 shrink-0">Tempat, Tgl Lahir:</dt>
+                          <dd className="text-slate-800 tabular-nums">{formattedBirthInfo}</dd>
+                        </div>
+                        <div className="flex flex-wrap sm:flex-nowrap items-baseline gap-x-2">
+                          <dt className="text-slate-500 sm:w-36 shrink-0">Kelas:</dt>
+                          <dd className="font-semibold text-teal-800">{user.className}</dd>
+                        </div>
+                        <div className="flex flex-wrap sm:flex-nowrap items-baseline gap-x-2">
+                          <dt className="text-slate-500 sm:w-36 shrink-0">Alamat Email:</dt>
+                          <dd className="text-slate-800 break-all">{user.email || '-'}</dd>
+                        </div>
+                        <div className="flex flex-wrap sm:flex-nowrap items-baseline gap-x-2">
+                          <dt className="text-slate-500 sm:w-36 shrink-0">Ruang / Sesi:</dt>
+                          <dd className="text-slate-800">{participantCard.examSessionNote || 'Ruang CBT Terpadu'}</dd>
+                        </div>
+                        {participantCard.showPinOnCard && studentCardPin && (
+                          <div className="flex flex-wrap sm:flex-nowrap items-baseline gap-x-2">
+                            <dt className="text-slate-500 sm:w-36 shrink-0">PIN Ujian:</dt>
+                            <dd className="font-mono font-bold text-indigo-700">{studentCardPin}</dd>
+                          </div>
+                        )}
+                      </dl>
+                    </div>
+                  </div>
+
+                  <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-1.5">
+                    <p className="text-xs font-bold text-indigo-950 uppercase tracking-wide">
+                      Jadwal Ujian Terdaftar ({ongoingAndUpcoming.length})
+                    </p>
+                    {ongoingAndUpcoming.length === 0 ? (
+                      <p className="text-xs text-slate-500">Belum ada jadwal tes aktif/mendatang untuk kelas {user.className}.</p>
+                    ) : (
+                      <ul className="space-y-1 text-xs text-slate-700">
+                        {ongoingAndUpcoming.slice(0, 5).map((ex, i) => (
+                          <li key={ex.id} className="flex flex-wrap items-baseline justify-between gap-2">
+                            <span className="font-medium text-slate-900">
+                              {i + 1}. {ex.title} ({ex.subjectName})
+                            </span>
+                            <span className="font-mono text-[11px] text-slate-600 tabular-nums">
+                              {new Date(ex.startAt).toLocaleString('id-ID', {
+                                day: '2-digit',
+                                month: 'short',
+                                hour: '2-digit',
+                                minute: '2-digit',
+                              })}{' '}
+                              · {ex.durationMinutes} mnt
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+
+                  <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 pt-3 border-t border-slate-200 text-xs text-slate-600">
+                    <p className="max-w-sm leading-relaxed">
+                      {participantCard.cardNote ||
+                        'Kartu peserta ini wajib dibawa dan ditunjukkan kepada pengawas ruang saat ujian berlangsung.'}
+                    </p>
+                    <div className="sm:text-right shrink-0">
+                      <p className="text-slate-700">{participantCard.signerTitle || 'Ketua Panitia Ujian'}</p>
+                      <div className="h-10" />
+                      <p className="font-bold text-slate-900">
+                        {participantCard.signerName?.trim() || '( .................................... )'}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
           ) : activeTab === 'ujian' || !showStudentHistory ? (
             <div className="space-y-4">
               <div className="flex items-center justify-between">
@@ -1735,26 +2017,41 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
                   <div className="flex items-start gap-2.5">
                     <ShieldAlert className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
                     <span>
-                      Penguncian otomatis aktif: perpindahan tab, halaman disembunyikan, atau kehilangan fokus dicatat server. Setelah {confirmExam.maxViolations} kejadian, sesi terkunci sementara waktu tetap berjalan.
+                      Penguncian otomatis aktif (batas {confirmExam.maxViolations} poin): perpindahan aplikasi/tab, keluar jendela, split screen, atau keluar layar penuh akan dicatat sistem.
                     </span>
                   </div>
                 )}
-                {confirmExam.proctoringEnabled && (
+                {confirmExam.requireExamWifi && (
+                  <div className="flex items-start gap-2.5">
+                    <ShieldAlert className="w-4 h-4 text-indigo-600 shrink-0 mt-0.5" />
+                    <span>
+                      Aturan WiFi / Jaringan Ujian aktif{confirmExam.allowedWifiSsid ? ` (${confirmExam.allowedWifiSsid})` : ''}: berpindah jaringan atau terputus lebih dari 10 detik akan tercatat sebagai pelanggaran.
+                    </span>
+                  </div>
+                )}
+                {(confirmExam.proctoringEnabled || confirmExam.requireCamera) && (
                   <div className="p-3 rounded-xl bg-sky-50 border border-sky-200 space-y-2">
                     <div className="flex items-start gap-2 text-slate-800">
                       <Camera className="w-4 h-4 text-sky-600 shrink-0 mt-0.5" />
                       <span>
-                        Ujian ini mengaktifkan pengawasan kamera ringan. Indikator kamera hanya untuk peninjauan pengawas, bukan tuduhan otomatis.
+                        {confirmExam.requireCamera
+                          ? 'Kamera WAJIB aktif selama ujian berlangsung. Jika lensa ditutup atau kamera dicabut/dimatikan, soal otomatis ditutup hingga kamera terlihat kembali.'
+                          : 'Ujian ini mengaktifkan pengawasan kamera ringan. Indikator kamera hanya untuk peninjauan pengawas, bukan tuduhan otomatis.'}
                       </span>
                     </div>
                     <label className="flex items-center gap-2 font-medium text-sky-900 cursor-pointer min-h-[36px]">
                       <input
                         type="checkbox"
-                        checked={cameraConsent}
+                        checked={confirmExam.requireCamera ? true : cameraConsent}
+                        disabled={Boolean(confirmExam.requireCamera)}
                         onChange={(e) => setCameraConsent(e.target.checked)}
                         className="w-4 h-4 rounded border-slate-300"
                       />
-                      <span>Izinkan akses kamera perangkat selama ujian berlangsung</span>
+                      <span>
+                        {confirmExam.requireCamera
+                          ? 'Akses kamera wajib diaktifkan selama ujian'
+                          : 'Izinkan akses kamera perangkat selama ujian berlangsung'}
+                      </span>
                     </label>
                   </div>
                 )}

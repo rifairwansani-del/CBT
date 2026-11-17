@@ -44,6 +44,13 @@ import { DEFAULT_SCORING_WEIGHTS, gradeExamPackage } from './scoring.ts';
 import { computeExamAnalytics, computeItemAnalysis } from './analytics.ts';
 import { realtimeHub } from './realtime.ts';
 import { run1300ParticipantBenchmark, runFunctionalTestSuite } from './testSuite.ts';
+import {
+  DEFAULT_VIOLATION_POLICY,
+  checkAndApplyAutoUnlockForSession,
+  detectDeviceBrandFromUserAgent,
+  evaluateViolationAgainstPolicy,
+  normalizeViolationPolicy,
+} from './violations.ts';
 import type { QuestionRecord, ScoringWeights, ShuffleMode } from './types.ts';
 
 const uploadMemory = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
@@ -83,6 +90,45 @@ function getSetting<T>(key: string, fallback: T): T {
   } catch {
     return fallback;
   }
+}
+
+interface ParticipantCardConfig {
+  enabled: boolean;
+  allowStudentDownload: boolean;
+  allowStudentPrint: boolean;
+  showPinOnCard: boolean;
+  cardTitle: string;
+  examSessionNote: string;
+  cardNote: string;
+  signerTitle: string;
+  signerName: string;
+}
+
+const DEFAULT_PARTICIPANT_CARD_CONFIG: ParticipantCardConfig = {
+  enabled: true,
+  allowStudentDownload: true,
+  allowStudentPrint: true,
+  showPinOnCard: false,
+  cardTitle: 'KARTU PESERTA UJIAN',
+  examSessionNote: 'Ruang CBT Terpadu · Sesi Sesuai Jadwal Kelas',
+  cardNote: 'Kartu peserta ini wajib dibawa dan ditunjukkan kepada pengawas ruang saat ujian berlangsung.',
+  signerTitle: 'Ketua Panitia Ujian',
+  signerName: '',
+};
+
+function normalizeParticipantCardConfig(raw: unknown): ParticipantCardConfig {
+  const src = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+  return {
+    enabled: src.enabled !== false,
+    allowStudentDownload: src.allowStudentDownload !== false,
+    allowStudentPrint: src.allowStudentPrint !== false,
+    showPinOnCard: Boolean(src.showPinOnCard),
+    cardTitle: String(src.cardTitle ?? DEFAULT_PARTICIPANT_CARD_CONFIG.cardTitle).trim().slice(0, 100) || DEFAULT_PARTICIPANT_CARD_CONFIG.cardTitle,
+    examSessionNote: String(src.examSessionNote ?? DEFAULT_PARTICIPANT_CARD_CONFIG.examSessionNote).trim().slice(0, 140),
+    cardNote: String(src.cardNote ?? DEFAULT_PARTICIPANT_CARD_CONFIG.cardNote).trim().slice(0, 400),
+    signerTitle: String(src.signerTitle ?? DEFAULT_PARTICIPANT_CARD_CONFIG.signerTitle).trim().slice(0, 100) || DEFAULT_PARTICIPANT_CARD_CONFIG.signerTitle,
+    signerName: String(src.signerName ?? '').trim().slice(0, 120),
+  };
 }
 
 interface ClassExamConfigOverride {
@@ -356,6 +402,8 @@ export function createApiRouter() {
     const sec = {
       ...secRaw,
       showStudentExamHistory: secRaw.showStudentExamHistory !== false,
+      participantCard: normalizeParticipantCardConfig(secRaw.participantCard),
+      violationPolicy: normalizeViolationPolicy(secRaw.violationPolicy),
     };
     res.json({ institution: inst, security: sec });
   });
@@ -797,16 +845,18 @@ export function createApiRouter() {
     const auth = req.auth!;
     if (auth.role === 'siswa') {
       const s = db.prepare(`
-        SELECT s.id, s.nis, s.nisn, s.full_name, s.birth_place, s.birth_date, s.gender, s.email, s.photo_link, s.class_id, c.name as class_name, s.photo_path
+        SELECT s.id, s.nis, s.nisn, s.pin_display, s.full_name, s.birth_place, s.birth_date, s.gender, s.email, s.photo_link, s.class_id, c.name as class_name, s.photo_path
         FROM students s JOIN classes c ON c.id = s.class_id
         WHERE s.id = ? AND s.is_active = 1
       `).get(auth.studentId!) as
-        | { id: string; nis: string; nisn: string; full_name: string; birth_place: string; birth_date: string; gender: string; email: string; photo_link: string; class_id: string; class_name: string; photo_path: string | null }
+        | { id: string; nis: string; nisn: string; pin_display: string; full_name: string; birth_place: string; birth_date: string; gender: string; email: string; photo_link: string; class_id: string; class_name: string; photo_path: string | null }
         | undefined;
       if (!s) {
         res.status(401).json({ error: 'Siswa tidak ditemukan atau nonaktif.' });
         return;
       }
+      const secSetting = getSetting<Record<string, unknown>>('security', {});
+      const cardCfg = normalizeParticipantCardConfig(secSetting.participantCard);
       const resolvedPhotoUrl = s.photo_link
         ? s.photo_link
         : s.photo_path
@@ -824,6 +874,7 @@ export function createApiRouter() {
           gender: s.gender || '',
           email: s.email || '',
           photoLink: s.photo_link || '',
+          pinDisplay: cardCfg.enabled && cardCfg.showPinOnCard ? s.pin_display : undefined,
           classId: s.class_id,
           className: s.class_name,
           hasPhoto: Boolean(resolvedPhotoUrl),
@@ -939,6 +990,18 @@ export function createApiRouter() {
     `).all(studentId) as Array<Record<string, unknown> & { exam_id: string; status: string }>;
     const sessionByExam = new Map(sessions.map((s) => [s.exam_id, s]));
 
+    // Auto-unlock any student sessions whose timed lock duration has already elapsed
+    for (const s of sessions) {
+      if (s.status === 'locked' && s.locked_until) {
+        const resUnlock = checkAndApplyAutoUnlockForSession(String(s.id));
+        if (resUnlock.unlocked) {
+          s.status = 'in_progress';
+          s.lock_reason = null;
+          s.locked_until = null;
+        }
+      }
+    }
+
     const visibleExams = exams
       .filter((e) => {
         const classIds = JSON.parse(e.class_ids_json || '[]') as string[];
@@ -983,6 +1046,9 @@ export function createApiRouter() {
           passingScore: e.passing_score,
           autoLockEnabled: Boolean(e.auto_lock_enabled),
           requireFullscreen: Boolean(e.require_fullscreen),
+          requireCamera: Boolean(e.require_camera),
+          requireExamWifi: Boolean(e.require_exam_wifi),
+          allowedWifiSsid: String(e.allowed_wifi_ssid || ''),
           maxViolations: e.max_violations,
           proctoringEnabled: Boolean(e.proctoring_enabled),
           allowCameraStream: Boolean(e.allow_camera_stream),
@@ -1002,7 +1068,9 @@ export function createApiRouter() {
                 serverEndAt: sess.server_end_at,
                 submittedAt: sess.submitted_at,
                 lockReason: sess.lock_reason,
+                lockedUntil: sess.locked_until || null,
                 violationCount: sess.violation_count,
+                violationPoints: sess.violation_points ?? sess.violation_count,
               }
             : null,
           result:
@@ -1023,8 +1091,13 @@ export function createApiRouter() {
       })
       .filter((item): item is NonNullable<typeof item> => Boolean(item));
 
-    const secSetting = getSetting<{ showStudentExamHistory?: boolean }>('security', { showStudentExamHistory: true });
+    const secSetting = getSetting<Record<string, unknown>>('security', { showStudentExamHistory: true });
     const showStudentHistory = secSetting.showStudentExamHistory !== false;
+    const participantCard = normalizeParticipantCardConfig(secSetting.participantCard);
+    const studentPinRow =
+      participantCard.enabled && participantCard.showPinOnCard
+        ? (db.prepare('SELECT pin_display FROM students WHERE id = ?').get(studentId) as { pin_display?: string } | undefined)
+        : undefined;
     const finalExams = showStudentHistory
       ? visibleExams.filter((e) => {
           const isHistoryExam = e.availability === 'completed' || e.availability === 'missed';
@@ -1035,6 +1108,8 @@ export function createApiRouter() {
     res.json({
       serverTime: new Date().toISOString(),
       showStudentHistory,
+      participantCard,
+      studentPin: studentPinRow?.pin_display || undefined,
       exams: finalExams,
     });
   });
@@ -1044,9 +1119,14 @@ export function createApiRouter() {
     const auth = req.auth!;
     const studentId = auth.studentId!;
     const { examId } = req.params;
-    const { pin, token, deviceFingerprint, forceTakeover } = req.body || {};
+    const { pin, token, deviceFingerprint, forceTakeover, deviceType, deviceBrand } = req.body || {};
     const cleanPin = String(pin ?? token ?? '').trim();
     const ip = req.ip || '127.0.0.1';
+    const ua = String(req.headers['user-agent'] || '');
+    const resolvedDeviceType = String(deviceType || (/Android/i.test(ua) ? 'android' : /iPad|iPhone/i.test(ua) ? 'ios_ipad' : 'desktop')).slice(0, 32);
+    const resolvedDeviceBrand = detectDeviceBrandFromUserAgent(ua, deviceBrand);
+    const secRaw = getSetting<Record<string, unknown>>('security', {});
+    const violationPolicy = normalizeViolationPolicy(secRaw.violationPolicy);
 
     if (!cleanPin) {
       res.status(400).json({ error: 'PIN / Password Ujian / Token wajib diisi untuk memulai ujian.' });
@@ -1162,11 +1242,15 @@ export function createApiRouter() {
           rubric_id: string;
           session_token_hash: string;
           device_fingerprint: string;
+          device_type: string;
+          device_brand: string;
           status: string;
           started_at: string;
           server_end_at: string;
           violation_count: number;
+          violation_points: number;
           lock_reason: string | null;
+          locked_until: string | null;
         }
       | undefined;
 
@@ -1219,9 +1303,9 @@ export function createApiRouter() {
       const tokenHash = crypto.createHash('sha256').update(auth.sessionTokenId || sessId).digest('hex');
 
       db.prepare(`
-        INSERT INTO exam_sessions (id, exam_id, student_id, package_id, rubric_id, session_token_hash, device_fingerprint, status, started_at, server_end_at, last_heartbeat_at, last_sync_at, connection_status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'in_progress', ?, ?, ?, ?, 'online')
-      `).run(sessId, examId, studentId, pkg.packageId, rubricId, tokenHash, fp, nowIso, new Date(effectiveEndMs).toISOString(), nowIso, nowIso);
+        INSERT INTO exam_sessions (id, exam_id, student_id, package_id, rubric_id, session_token_hash, device_fingerprint, device_type, device_brand, status, started_at, server_end_at, last_heartbeat_at, last_sync_at, connection_status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'in_progress', ?, ?, ?, ?, 'online')
+      `).run(sessId, examId, studentId, pkg.packageId, rubricId, tokenHash, fp, resolvedDeviceType, resolvedDeviceBrand, nowIso, new Date(effectiveEndMs).toISOString(), nowIso, nowIso);
 
       session = db.prepare('SELECT * FROM exam_sessions WHERE id = ?').get(sessId) as typeof session;
 
@@ -1235,6 +1319,14 @@ export function createApiRouter() {
         timestamp: nowIso,
       });
     } else {
+      // Auto-unlock if timed lock already expired
+      if (session.status === 'locked' && session.locked_until) {
+        const autoUnlockRes = checkAndApplyAutoUnlockForSession(session.id);
+        if (autoUnlockRes.unlocked) {
+          session = db.prepare('SELECT * FROM exam_sessions WHERE id = ?').get(session.id) as typeof session;
+        }
+      }
+
       // Check if time already expired on server!
       if (nowMs >= new Date(session.server_end_at).getTime() && (session.status === 'in_progress' || session.status === 'locked')) {
         finalizeAndGradeSession(session.id, 'expired');
@@ -1247,32 +1339,87 @@ export function createApiRouter() {
         return;
       }
 
-      // Prevent simultaneous dual sessions on the same exam unless explicitly reclaimed or same token
       const incomingTokenHash = crypto.createHash('sha256').update(auth.sessionTokenId || session.id).digest('hex');
-      if (session.session_token_hash !== incomingTokenHash && session.device_fingerprint && deviceFingerprint && session.device_fingerprint !== String(deviceFingerprint).slice(0, 120)) {
-        // Log duplicate session attempt
-        const nextOcc = session.violation_count + 1;
-        const shouldLock = Boolean(exam.auto_lock_enabled) && nextOcc >= exam.max_violations;
-        db.prepare(`
-          INSERT INTO violation_logs (id, session_id, exam_id, student_id, event_type, details_json, occurrence_number, triggered_lock, server_timestamp)
-          VALUES (?, ?, ?, ?, 'sesi_ganda_terdeteksi', ?, ?, ?, ?)
-        `).run(
-          crypto.randomUUID(),
-          session.id,
-          examId,
-          studentId,
-          JSON.stringify({ previousDevice: session.device_fingerprint, newDevice: String(deviceFingerprint).slice(0, 120) }),
-          nextOcc,
-          shouldLock ? 1 : 0,
-          nowIso
-        );
-        db.prepare(`UPDATE exam_sessions SET violation_count = ?, status = ?, lock_reason = ? WHERE id = ?`).run(
-          nextOcc,
-          shouldLock ? 'locked' : session.status,
-          shouldLock ? 'Terdeteksi akses sesi ganda pada perangkat berbeda.' : session.lock_reason,
-          session.id
-        );
-        if (!forceTakeover) {
+
+      // Log "Login ulang di tengah ujian" when student closed app/relogged in with a new auth token
+      if (session.session_token_hash !== incomingTokenHash) {
+        const isDifferentDevice =
+          Boolean(session.device_fingerprint) &&
+          Boolean(deviceFingerprint) &&
+          session.device_fingerprint !== String(deviceFingerprint).slice(0, 120);
+
+        const reloginEval = evaluateViolationAgainstPolicy({
+          policy: violationPolicy,
+          eventType: isDifferentDevice ? 'sesi_ganda_terdeteksi' : 'login_ulang_tengah_ujian',
+          deviceBrand: resolvedDeviceBrand,
+          autoLockEnabled: Boolean(exam.auto_lock_enabled),
+          currentPoints: session.violation_points ?? session.violation_count,
+          maxViolationPoints: exam.max_violations,
+        });
+
+        if (!reloginEval.ignored) {
+          const nextOcc = session.violation_count + 1;
+          db.prepare(`
+            INSERT INTO violation_logs (
+              id, session_id, exam_id, student_id, event_type, details_json,
+              device_type, device_brand, points_added, is_excused, excuse_reason,
+              occurrence_number, triggered_lock, server_timestamp
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `).run(
+            crypto.randomUUID(),
+            session.id,
+            examId,
+            studentId,
+            isDifferentDevice ? 'sesi_ganda_terdeteksi' : 'login_ulang_tengah_ujian',
+            JSON.stringify({
+              previousDevice: session.device_fingerprint,
+              newDevice: String(deviceFingerprint || '').slice(0, 120),
+              reloginDetected: true,
+            }),
+            resolvedDeviceType,
+            resolvedDeviceBrand,
+            reloginEval.pointsAdded,
+            reloginEval.isExcused ? 1 : 0,
+            reloginEval.excuseReason,
+            nextOcc,
+            reloginEval.willLock ? 1 : 0,
+            nowIso
+          );
+
+          db.prepare(`
+            UPDATE exam_sessions
+            SET violation_count = ?,
+                violation_points = ?,
+                status = CASE WHEN ? = 1 THEN 'locked' ELSE status END,
+                lock_reason = COALESCE(?, lock_reason),
+                locked_until = COALESCE(?, locked_until),
+                locked_by_event_type = COALESCE(?, locked_by_event_type)
+            WHERE id = ?
+          `).run(
+            nextOcc,
+            reloginEval.nextPoints,
+            reloginEval.willLock ? 1 : 0,
+            reloginEval.lockReason,
+            reloginEval.lockedUntil,
+            reloginEval.willLock ? (isDifferentDevice ? 'sesi_ganda_terdeteksi' : 'login_ulang_tengah_ujian') : null,
+            session.id
+          );
+
+          realtimeHub.queueMonitorUpdate({
+            kind: 'violation_logged',
+            priority: reloginEval.willLock ? 'high' : 'normal',
+            examId,
+            sessionId: session.id,
+            studentId,
+            eventType: isDifferentDevice ? 'sesi_ganda_terdeteksi' : 'login_ulang_tengah_ujian',
+            violationCount: nextOcc,
+            locked: reloginEval.willLock,
+            timestamp: nowIso,
+          });
+        }
+
+        if (isDifferentDevice && !forceTakeover) {
           res.status(409).json({
             error: 'Terdeteksi sesi ujian aktif pada perangkat/browser lain. Peristiwa ini tercatat pada log pengawasan.',
             code: 'DUPLICATE_SESSION_DETECTED',
@@ -1281,11 +1428,12 @@ export function createApiRouter() {
         }
       }
 
-      db.prepare(`UPDATE exam_sessions SET session_token_hash = ?, last_heartbeat_at = ?, connection_status = 'online' WHERE id = ?`).run(
-        incomingTokenHash,
-        nowIso,
-        session.id
-      );
+      db.prepare(`
+        UPDATE exam_sessions
+        SET session_token_hash = ?, device_type = ?, device_brand = CASE WHEN ? != '' THEN ? ELSE device_brand END,
+            last_heartbeat_at = ?, connection_status = 'online'
+        WHERE id = ?
+      `).run(incomingTokenHash, resolvedDeviceType, resolvedDeviceBrand, resolvedDeviceBrand, nowIso, session.id);
       session = db.prepare('SELECT * FROM exam_sessions WHERE id = ?').get(session.id) as typeof session;
     }
 
@@ -1330,6 +1478,7 @@ export function createApiRouter() {
 
     res.json({
       serverTime: nowIso,
+      violationPolicy,
       session: {
         id: session!.id,
         examId: exam.id,
@@ -1340,10 +1489,15 @@ export function createApiRouter() {
         startedAt: session!.started_at,
         serverEndAt: session!.server_end_at,
         violationCount: session!.violation_count,
+        violationPoints: session!.violation_points ?? session!.violation_count,
         maxViolations: exam.max_violations,
         autoLockEnabled: Boolean(exam.auto_lock_enabled),
         requireFullscreen: Boolean(exam.require_fullscreen),
+        requireCamera: Boolean(exam.require_camera),
+        requireExamWifi: Boolean(exam.require_exam_wifi),
+        allowedWifiSsid: String(exam.allowed_wifi_ssid || ''),
         lockReason: session!.lock_reason,
+        lockedUntil: session!.locked_until || null,
         proctoring: {
           enabled: Boolean(exam.proctoring_enabled),
           sensitivity: exam.proctoring_sensitivity,
@@ -1391,8 +1545,11 @@ export function createApiRouter() {
     }
 
     if (session.status === 'locked') {
-      res.status(423).json({ error: 'Sesi sedang terkunci. Hubungi pengawas untuk membuka kunci sebelum menyimpan perubahan baru.', status: 'locked' });
-      return;
+      const autoUnlocked = checkAndApplyAutoUnlockForSession(session.id);
+      if (!autoUnlocked.unlocked) {
+        res.status(423).json({ error: 'Sesi sedang terkunci. Tunggu buka kunci otomatis atau hubungi pengawas sebelum menyimpan perubahan baru.', status: 'locked' });
+        return;
+      }
     }
 
     const selectExisting = db.prepare('SELECT client_version FROM student_answers WHERE session_id = ? AND question_id = ?');
@@ -1448,12 +1605,12 @@ export function createApiRouter() {
     });
   });
 
-  // Heartbeat & session lock status polling
+  // Heartbeat & session lock/auto-unlock status polling
   router.post('/student/sessions/:sessionId/heartbeat', requireAuth, requireRole(['siswa']), (req, res) => {
     const auth = req.auth!;
     const { sessionId } = req.params;
-    const session = db.prepare('SELECT id, exam_id, status, server_end_at, lock_reason, violation_count FROM exam_sessions WHERE id = ? AND student_id = ?').get(sessionId, auth.studentId!) as
-      | { id: string; exam_id: string; status: string; server_end_at: string; lock_reason: string | null; violation_count: number }
+    let session = db.prepare('SELECT id, exam_id, status, server_end_at, lock_reason, locked_until, violation_count, violation_points FROM exam_sessions WHERE id = ? AND student_id = ?').get(sessionId, auth.studentId!) as
+      | { id: string; exam_id: string; status: string; server_end_at: string; lock_reason: string | null; locked_until: string | null; violation_count: number; violation_points: number }
       | undefined;
 
     if (!session) {
@@ -1470,6 +1627,28 @@ export function createApiRouter() {
       return;
     }
 
+    if (session.status === 'locked' && session.locked_until) {
+      const autoUnlockRes = checkAndApplyAutoUnlockForSession(session.id);
+      if (autoUnlockRes.unlocked) {
+        session = db.prepare('SELECT id, exam_id, status, server_end_at, lock_reason, locked_until, violation_count, violation_points FROM exam_sessions WHERE id = ?').get(session.id) as typeof session;
+        realtimeHub.sendToStudent(session.id, {
+          type: 'session:unlocked',
+          notes: autoUnlockRes.unlockNotes,
+          autoUnlocked: true,
+          timestamp: nowIso,
+        });
+        realtimeHub.queueMonitorUpdate({
+          kind: 'session_unlocked',
+          priority: 'high',
+          examId: session.exam_id,
+          sessionId: session.id,
+          studentId: auth.studentId!,
+          status: 'in_progress',
+          timestamp: nowIso,
+        });
+      }
+    }
+
     db.prepare(`UPDATE exam_sessions SET last_heartbeat_at = ?, connection_status = 'online' WHERE id = ?`).run(nowIso, sessionId);
 
     res.json({
@@ -1477,7 +1656,9 @@ export function createApiRouter() {
       status: session.status,
       serverEndAt: session.server_end_at,
       lockReason: session.lock_reason,
+      lockedUntil: session.locked_until,
       violationCount: session.violation_count,
+      violationPoints: session.violation_points ?? session.violation_count,
     });
   });
 
@@ -1485,7 +1666,7 @@ export function createApiRouter() {
   router.post('/student/sessions/:sessionId/submit', requireAuth, requireRole(['siswa']), (req, res) => {
     const auth = req.auth!;
     const { sessionId } = req.params;
-    const session = db.prepare('SELECT id, status FROM exam_sessions WHERE id = ? AND student_id = ?').get(sessionId, auth.studentId!) as
+    let session = db.prepare('SELECT id, status FROM exam_sessions WHERE id = ? AND student_id = ?').get(sessionId, auth.studentId!) as
       | { id: string; status: string }
       | undefined;
 
@@ -1494,19 +1675,30 @@ export function createApiRouter() {
       return;
     }
     if (session.status === 'locked') {
-      res.status(423).json({ error: 'Sesi terkunci. Hubungi pengawas untuk membuka kunci atau pengawas dapat mengumpulkan sesi.' });
-      return;
+      const autoUnlockRes = checkAndApplyAutoUnlockForSession(session.id);
+      if (!autoUnlockRes.unlocked) {
+        res.status(423).json({ error: 'Sesi terkunci. Hubungi pengawas untuk membuka kunci atau pengawas dapat mengumpulkan sesi.' });
+        return;
+      }
     }
 
     const score = finalizeAndGradeSession(sessionId, 'submitted');
     res.json({ ok: true, status: 'submitted', graded: Boolean(score) });
   });
 
-  // Observed browser violation event (factual recording, configurable auto-lock)
+  // Observed browser / device violation event (device-aware, gadget brand exception, points & auto-unlock)
   router.post('/student/sessions/:sessionId/violations', requireAuth, requireRole(['siswa']), (req, res) => {
     const auth = req.auth!;
     const { sessionId } = req.params;
-    const { eventType, details } = req.body || {};
+    const { eventType, details, deviceType, deviceBrand, durationSeconds } = req.body || {};
+
+    const cleanType = String(eventType || 'peristiwa_browser').slice(0, 64);
+
+    // Back button is NEVER counted as a violation, only rejected cleanly on the client
+    if (cleanType === 'tombol_back' || cleanType === 'back_button') {
+      res.json({ ignored: true, reason: 'Tombol Back ditolak sistem dan tidak dihitung sebagai pelanggaran.' });
+      return;
+    }
 
     const session = db.prepare(`
       SELECT es.*, e.max_violations, e.auto_lock_enabled
@@ -1520,8 +1712,13 @@ export function createApiRouter() {
           student_id: string;
           status: string;
           violation_count: number;
+          violation_points: number;
           max_violations: number;
           auto_lock_enabled: number;
+          device_type: string;
+          device_brand: string;
+          lock_reason: string | null;
+          locked_until: string | null;
         }
       | undefined;
 
@@ -1530,63 +1727,194 @@ export function createApiRouter() {
       return;
     }
     if (session.status === 'submitted' || session.status === 'expired') {
-      res.json({ status: session.status, violationCount: session.violation_count });
+      res.json({ status: session.status, violationCount: session.violation_count, violationPoints: session.violation_points });
+      return;
+    }
+
+    const ua = String(req.headers['user-agent'] || '');
+    const resolvedDeviceType = String(deviceType || session.device_type || 'web').slice(0, 32);
+    const resolvedDeviceBrand = detectDeviceBrandFromUserAgent(ua, deviceBrand || session.device_brand);
+    const cleanDuration =
+      durationSeconds !== undefined && durationSeconds !== null && Number.isFinite(Number(durationSeconds))
+        ? Math.max(0, Math.round(Number(durationSeconds)))
+        : null;
+
+    const secRaw = getSetting<Record<string, unknown>>('security', {});
+    const policy = normalizeViolationPolicy(secRaw.violationPolicy);
+
+    const evaluated = evaluateViolationAgainstPolicy({
+      policy,
+      eventType: cleanType,
+      deviceBrand: resolvedDeviceBrand,
+      autoLockEnabled: Boolean(session.auto_lock_enabled),
+      currentPoints: session.violation_points ?? session.violation_count,
+      maxViolationPoints: session.max_violations,
+      durationSeconds: cleanDuration,
+    });
+
+    if (evaluated.ignored) {
+      res.json({
+        ignored: true,
+        status: session.status,
+        violationCount: session.violation_count,
+        violationPoints: session.violation_points,
+        maxViolations: session.max_violations,
+        locked: session.status === 'locked',
+        lockReason: session.lock_reason,
+        lockedUntil: session.locked_until,
+      });
       return;
     }
 
     const nowIso = new Date().toISOString();
     const nextCount = session.violation_count + 1;
-    const willLock = Boolean(session.auto_lock_enabled) && nextCount >= session.max_violations;
-    const cleanType = String(eventType || 'peristiwa_browser').slice(0, 64);
-
-    const lockReason = willLock
-      ? `Sesi dikunci otomatis setelah ${nextCount} kejadian teramati (${cleanType}). Waktu ujian tetap berjalan.`
-      : null;
+    const logId = crypto.randomUUID();
+    const alreadyLocked = session.status === 'locked';
+    const nextLocked = alreadyLocked || evaluated.willLock;
+    const nextLockReason = evaluated.willLock ? evaluated.lockReason : session.lock_reason;
+    const nextLockedUntil = evaluated.willLock ? evaluated.lockedUntil : session.locked_until;
 
     db.prepare(`
-      INSERT INTO violation_logs (id, session_id, exam_id, student_id, event_type, details_json, occurrence_number, triggered_lock, server_timestamp)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO violation_logs (
+        id, session_id, exam_id, student_id, event_type, details_json,
+        device_type, device_brand, duration_seconds, points_added, is_excused, excuse_reason,
+        occurrence_number, triggered_lock, server_timestamp
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
-      crypto.randomUUID(),
+      logId,
       session.id,
       session.exam_id,
       session.student_id,
       cleanType,
-      JSON.stringify(details || {}),
+      JSON.stringify({ ...(details && typeof details === 'object' ? details : {}), label: evaluated.rule?.label || cleanType }),
+      resolvedDeviceType,
+      resolvedDeviceBrand,
+      cleanDuration,
+      evaluated.pointsAdded,
+      evaluated.isExcused ? 1 : 0,
+      evaluated.excuseReason,
       nextCount,
-      willLock ? 1 : 0,
+      evaluated.willLock ? 1 : 0,
       nowIso
     );
 
-    if (willLock) {
-      db.prepare(`UPDATE exam_sessions SET violation_count = ?, status = 'locked', lock_reason = ? WHERE id = ?`).run(
-        nextCount,
-        lockReason,
-        session.id
-      );
+    let finalCount = nextCount;
+    let finalPoints = evaluated.nextPoints;
+
+    // Companion event: pressing Home button on Android is always accompanied by "Keluar dari aplikasi"
+    if (cleanType === 'tombol_home' && !(details as Record<string, unknown> | undefined)?.skipCompanionExit) {
+      const exitEval = evaluateViolationAgainstPolicy({
+        policy,
+        eventType: 'keluar_aplikasi',
+        deviceBrand: resolvedDeviceBrand,
+        autoLockEnabled: Boolean(session.auto_lock_enabled),
+        currentPoints: finalPoints,
+        maxViolationPoints: session.max_violations,
+        durationSeconds: cleanDuration,
+      });
+      if (!exitEval.ignored) {
+        finalCount += 1;
+        finalPoints = exitEval.nextPoints;
+        db.prepare(`
+          INSERT INTO violation_logs (
+            id, session_id, exam_id, student_id, event_type, details_json,
+            device_type, device_brand, duration_seconds, points_added, is_excused, excuse_reason,
+            occurrence_number, triggered_lock, server_timestamp
+          )
+          VALUES (?, ?, ?, ?, 'keluar_aplikasi', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          crypto.randomUUID(),
+          session.id,
+          session.exam_id,
+          session.student_id,
+          JSON.stringify({ accompaniedBy: 'tombol_home', label: 'Keluar dari aplikasi' }),
+          resolvedDeviceType,
+          resolvedDeviceBrand,
+          cleanDuration,
+          exitEval.pointsAdded,
+          exitEval.isExcused ? 1 : 0,
+          exitEval.excuseReason,
+          finalCount,
+          exitEval.willLock ? 1 : 0,
+          nowIso
+        );
+        if (exitEval.willLock && !nextLocked) {
+          db.prepare(`
+            UPDATE exam_sessions
+            SET violation_count = ?, violation_points = ?, status = 'locked', lock_reason = ?, locked_until = ?, locked_by_event_type = 'keluar_aplikasi'
+            WHERE id = ?
+          `).run(finalCount, finalPoints, exitEval.lockReason, exitEval.lockedUntil, session.id);
+        }
+      }
+    }
+
+    if (evaluated.willLock) {
+      db.prepare(`
+        UPDATE exam_sessions
+        SET violation_count = ?, violation_points = ?, status = 'locked', lock_reason = ?, locked_until = ?, locked_by_event_type = ?
+        WHERE id = ?
+      `).run(finalCount, finalPoints, nextLockReason, nextLockedUntil, cleanType, session.id);
     } else {
-      db.prepare('UPDATE exam_sessions SET violation_count = ? WHERE id = ?').run(nextCount, session.id);
+      db.prepare(`
+        UPDATE exam_sessions
+        SET violation_count = ?, violation_points = ?, device_type = ?,
+            device_brand = CASE WHEN ? != '' THEN ? ELSE device_brand END
+        WHERE id = ?
+      `).run(finalCount, finalPoints, resolvedDeviceType, resolvedDeviceBrand, resolvedDeviceBrand, session.id);
     }
 
     realtimeHub.queueMonitorUpdate({
       kind: 'violation_logged',
-      priority: willLock ? 'high' : 'normal',
+      priority: evaluated.willLock ? 'high' : 'normal',
       examId: session.exam_id,
       sessionId: session.id,
       studentId: session.student_id,
       eventType: cleanType,
-      violationCount: nextCount,
-      locked: willLock,
+      deviceType: resolvedDeviceType,
+      deviceBrand: resolvedDeviceBrand,
+      isExcused: evaluated.isExcused,
+      excuseReason: evaluated.excuseReason,
+      violationCount: finalCount,
+      violationPoints: finalPoints,
+      locked: nextLocked,
       timestamp: nowIso,
     });
 
     res.json({
-      status: willLock ? 'locked' : session.status,
-      violationCount: nextCount,
+      id: logId,
+      status: nextLocked ? 'locked' : session.status,
+      violationCount: finalCount,
+      violationPoints: finalPoints,
       maxViolations: session.max_violations,
-      locked: willLock,
-      lockReason,
+      locked: nextLocked,
+      lockReason: nextLockReason,
+      lockedUntil: nextLockedUntil,
+      isExcused: evaluated.isExcused,
+      excuseReason: evaluated.excuseReason,
+      pointsAdded: evaluated.pointsAdded,
+      mode: evaluated.rule?.mode || 'add_points',
+      triggerSirenRedScreen: Boolean(evaluated.rule?.triggerSirenRedScreen),
     });
+  });
+
+  // Update away-duration seconds on an already-recorded exit/leave log once student returns
+  router.patch('/student/sessions/:sessionId/violations/:logId/duration', requireAuth, requireRole(['siswa']), (req, res) => {
+    const auth = req.auth!;
+    const { sessionId, logId } = req.params;
+    const durationSec = Math.max(0, Math.round(Number(req.body?.durationSeconds || 0)));
+
+    const row = db
+      .prepare('SELECT id FROM violation_logs WHERE id = ? AND session_id = ? AND student_id = ?')
+      .get(logId, sessionId, auth.studentId!) as { id: string } | undefined;
+
+    if (!row) {
+      res.status(404).json({ error: 'Log pelanggaran tidak ditemukan.' });
+      return;
+    }
+
+    db.prepare('UPDATE violation_logs SET duration_seconds = ? WHERE id = ?').run(durationSec, logId);
+    res.json({ ok: true, durationSeconds: durationSec });
   });
 
   // On-device AI Proctoring Indicator (indicator ONLY, never automatic lock or accusation)
@@ -1863,6 +2191,14 @@ export function createApiRouter() {
 
     const participants = targetStudents.map((st) => {
       const sess = sessMap.get(st.id);
+      if (sess && sess.status === 'locked' && sess.locked_until) {
+        const resAuto = checkAndApplyAutoUnlockForSession(String(sess.id));
+        if (resAuto.unlocked) {
+          sess.status = 'in_progress';
+          sess.lock_reason = null;
+          sess.locked_until = null;
+        }
+      }
       const isDisconnected = sess && sess.status === 'in_progress' && nowMs - new Date(sess.last_heartbeat_at).getTime() > 45000;
       const resolvedPhoto = st.photo_link
         ? st.photo_link
@@ -1882,10 +2218,14 @@ export function createApiRouter() {
         status: sess ? (isDisconnected ? 'disconnected' : sess.status) : 'not_logged_in',
         rawStatus: sess?.status || 'not_logged_in',
         violationCount: sess?.violation_count || 0,
+        violationPoints: Number(sess?.violation_points ?? sess?.violation_count ?? 0),
         proctoringCount: sess?.proctoring_count || 0,
         answeredCount: sess?.answered_count || 0,
         finalScore: sess?.final_score ?? null,
         lockReason: sess?.lock_reason || null,
+        lockedUntil: (sess?.locked_until as string | null | undefined) || null,
+        deviceType: String(sess?.device_type || ''),
+        deviceBrand: String(sess?.device_brand || ''),
         lastHeartbeatAt: sess?.last_heartbeat_at || null,
       };
     });
@@ -1975,7 +2315,7 @@ export function createApiRouter() {
 
     db.prepare(`
       UPDATE exam_sessions
-      SET status = 'in_progress', lock_reason = NULL, unlocked_by = ?, unlocked_at = ?, unlock_notes = ?
+      SET status = 'in_progress', lock_reason = NULL, locked_until = NULL, locked_by_event_type = NULL, unlocked_by = ?, unlocked_at = ?, unlock_notes = ?
       WHERE id = ?
     `).run(auth.userId, nowIso, unlockNote, sessionId);
 
@@ -2215,7 +2555,10 @@ export function createApiRouter() {
     db.prepare(`
       UPDATE exam_sessions
       SET violation_count = 0,
+          violation_points = 0,
           lock_reason = NULL,
+          locked_until = NULL,
+          locked_by_event_type = NULL,
           status = ?,
           unlocked_by = ?,
           unlocked_at = ?,
@@ -4146,11 +4489,12 @@ export function createApiRouter() {
           id, title, exam_type, subject_id, class_ids_json, assigned_student_ids_json,
           question_bank_id, question_count, shuffle_mode, shuffle_questions, shuffle_options,
           composition_json, duration_minutes, passing_score, max_violations, auto_lock_enabled,
-          require_fullscreen, proctoring_enabled, proctoring_sensitivity, proctoring_tolerance,
+          require_fullscreen, require_camera, require_exam_wifi, allowed_wifi_ssid,
+          proctoring_enabled, proctoring_sensitivity, proctoring_tolerance,
           proctoring_retention_days, allow_camera_stream, publication_policy, history_visible, publish_at,
           access_token_mode, access_token, class_configs_json, created_by, created_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         examId,
         String(b.title).trim(),
@@ -4169,6 +4513,9 @@ export function createApiRouter() {
         Number(b.maxViolations || 3),
         b.autoLockEnabled === false ? 0 : 1,
         b.requireFullscreen ? 1 : 0,
+        b.requireCamera ? 1 : 0,
+        b.requireExamWifi ? 1 : 0,
+        String(b.allowedWifiSsid || '').trim().slice(0, 64),
         b.proctoringEnabled ? 1 : 0,
         b.proctoringSensitivity || 'sedang',
         Number(b.proctoringTolerance || 5),
@@ -4386,6 +4733,9 @@ export function createApiRouter() {
             max_violations = COALESCE(?, max_violations),
             auto_lock_enabled = COALESCE(?, auto_lock_enabled),
             require_fullscreen = COALESCE(?, require_fullscreen),
+            require_camera = COALESCE(?, require_camera),
+            require_exam_wifi = COALESCE(?, require_exam_wifi),
+            allowed_wifi_ssid = COALESCE(?, allowed_wifi_ssid),
             proctoring_enabled = COALESCE(?, proctoring_enabled),
             proctoring_sensitivity = COALESCE(?, proctoring_sensitivity),
             proctoring_tolerance = COALESCE(?, proctoring_tolerance),
@@ -4413,6 +4763,9 @@ export function createApiRouter() {
         b.maxViolations ? Number(b.maxViolations) : null,
         typeof b.autoLockEnabled === 'boolean' ? (b.autoLockEnabled ? 1 : 0) : null,
         typeof b.requireFullscreen === 'boolean' ? (b.requireFullscreen ? 1 : 0) : null,
+        typeof b.requireCamera === 'boolean' ? (b.requireCamera ? 1 : 0) : null,
+        typeof b.requireExamWifi === 'boolean' ? (b.requireExamWifi ? 1 : 0) : null,
+        b.allowedWifiSsid !== undefined ? String(b.allowedWifiSsid || '').trim().slice(0, 64) : null,
         typeof b.proctoringEnabled === 'boolean' ? (b.proctoringEnabled ? 1 : 0) : null,
         b.proctoringSensitivity || null,
         b.proctoringTolerance ? Number(b.proctoringTolerance) : null,
@@ -5040,6 +5393,8 @@ export function createApiRouter() {
       const normalizedSecurity = {
         ...security,
         showStudentExamHistory: security.showStudentExamHistory !== false,
+        participantCard: normalizeParticipantCardConfig(security.participantCard),
+        violationPolicy: normalizeViolationPolicy(security.violationPolicy ?? DEFAULT_VIOLATION_POLICY),
       };
       db.prepare(`INSERT INTO system_settings (key, value_json, updated_at) VALUES ('security', ?, ?) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`).run(
         JSON.stringify(normalizedSecurity),
@@ -5138,6 +5493,9 @@ export function createApiRouter() {
     const sql = ids.length > 0
       ? `SELECT vl.server_timestamp as WAKTU_SERVER, st.nis as NIS, st.full_name as NAMA_SISWA,
                 c.name as KELAS, e.title as UJIAN, vl.event_type as JENIS_KEJADIAN,
+                vl.device_type as PERANGKAT, vl.device_brand as MEREK_GADGET,
+                vl.duration_seconds as LAMA_KELUAR_DETIK, vl.points_added as POIN,
+                CASE WHEN vl.is_excused = 1 THEN vl.excuse_reason ELSE 'Tidak' END as PENGECUALIAN,
                 vl.occurrence_number as KEJADIAN_KE, vl.triggered_lock as MEMICU_KUNCI,
                 vl.admin_action as TINDAKAN_ADMIN, vl.action_notes as CATATAN
          FROM violation_logs vl
@@ -5148,6 +5506,9 @@ export function createApiRouter() {
          ORDER BY vl.server_timestamp DESC`
       : `SELECT vl.server_timestamp as WAKTU_SERVER, st.nis as NIS, st.full_name as NAMA_SISWA,
                 c.name as KELAS, e.title as UJIAN, vl.event_type as JENIS_KEJADIAN,
+                vl.device_type as PERANGKAT, vl.device_brand as MEREK_GADGET,
+                vl.duration_seconds as LAMA_KELUAR_DETIK, vl.points_added as POIN,
+                CASE WHEN vl.is_excused = 1 THEN vl.excuse_reason ELSE 'Tidak' END as PENGECUALIAN,
                 vl.occurrence_number as KEJADIAN_KE, vl.triggered_lock as MEMICU_KUNCI,
                 vl.admin_action as TINDAKAN_ADMIN, vl.action_notes as CATATAN
          FROM violation_logs vl

@@ -14,8 +14,33 @@ import {
   XCircle,
 } from 'lucide-react';
 import { apiFetch, withAuthTokenUrl } from '../../lib/api.ts';
+import {
+  DEFAULT_BRAND_EXCEPTIONS_CLIENT,
+  DEFAULT_VIOLATION_POLICY_CLIENT,
+  DEFAULT_VIOLATION_RULES_CLIENT,
+  getViolationLabel,
+} from '../../lib/violationCatalog.ts';
 import { ConfirmDialog } from './ConfirmDialog.tsx';
-import type { InstitutionBranding, SecuritySettings } from '../../types/cbt.ts';
+import type {
+  GadgetBrandException,
+  InstitutionBranding,
+  ParticipantCardSettings,
+  SecuritySettings,
+  ViolationPolicySettings,
+  ViolationRuleMode,
+} from '../../types/cbt.ts';
+
+const DEFAULT_PARTICIPANT_CARD: ParticipantCardSettings = {
+  enabled: true,
+  allowStudentDownload: true,
+  allowStudentPrint: true,
+  showPinOnCard: false,
+  cardTitle: 'KARTU PESERTA UJIAN',
+  examSessionNote: 'Ruang CBT Terpadu · Sesi Sesuai Jadwal Kelas',
+  cardNote: 'Kartu peserta ini wajib dibawa dan ditunjukkan kepada pengawas ruang saat ujian berlangsung.',
+  signerTitle: 'Ketua Panitia Ujian',
+  signerName: '',
+};
 
 interface FunctionalTestReport {
   total: number;
@@ -63,7 +88,7 @@ export const SystemSettingsAndAuditPanel: React.FC<{
   branding: InstitutionBranding;
   onBrandingUpdated: () => void;
 }> = ({ branding, onBrandingUpdated }) => {
-  const [subTab, setSubTab] = useState<'branding' | 'staff' | 'logs' | 'qa'>('branding');
+  const [subTab, setSubTab] = useState<'branding' | 'violations' | 'staff' | 'logs' | 'qa'>('branding');
   const [instForm, setInstForm] = useState<InstitutionBranding>(branding);
   const [secForm, setSecForm] = useState<SecuritySettings>({
     maxLoginAttempts: 5,
@@ -72,7 +97,11 @@ export const SystemSettingsAndAuditPanel: React.FC<{
     maxConcurrentCameraStreams: 6,
     showStudentExamHistory: true,
     privacyNotice: '',
+    participantCard: DEFAULT_PARTICIPANT_CARD,
+    violationPolicy: DEFAULT_VIOLATION_POLICY_CLIENT,
   });
+  const [newBrandName, setNewBrandName] = useState('');
+  const [newBrandNote, setNewBrandNote] = useState('');
 
   // Staff state
   const [staff, setStaff] = useState<StaffMember[]>([]);
@@ -126,9 +155,28 @@ export const SystemSettingsAndAuditPanel: React.FC<{
         apiFetch<{ logs: Array<Record<string, unknown>> }>('/api/admin/audit-logs'),
       ]);
       setInstForm(bRes.institution);
+      const rawPolicy = bRes.security?.violationPolicy;
+      const mergedRules = DEFAULT_VIOLATION_RULES_CLIENT.map((defRule) => {
+        const saved = rawPolicy?.rules?.find((r) => r.code === defRule.code);
+        return saved ? { ...defRule, ...saved } : defRule;
+      });
+      const mergedBrands: GadgetBrandException[] =
+        Array.isArray(rawPolicy?.brandExceptions) && rawPolicy.brandExceptions.length > 0
+          ? rawPolicy.brandExceptions
+          : DEFAULT_BRAND_EXCEPTIONS_CLIENT;
       setSecForm({
         ...bRes.security,
         showStudentExamHistory: bRes.security?.showStudentExamHistory !== false,
+        participantCard: {
+          ...DEFAULT_PARTICIPANT_CARD,
+          ...(bRes.security?.participantCard || {}),
+        },
+        violationPolicy: {
+          rules: mergedRules,
+          brandExceptions: mergedBrands,
+          wifiDisconnectGraceSeconds: rawPolicy?.wifiDisconnectGraceSeconds ?? 10,
+          blockBackNavigation: rawPolicy?.blockBackNavigation !== false,
+        },
       });
       setStaff(stRes.staff);
       setClasses(clRes.classes);
@@ -334,6 +382,7 @@ export const SystemSettingsAndAuditPanel: React.FC<{
       <div className="inline-flex p-1 bg-slate-200/70 rounded-xl gap-1 overflow-x-auto no-scrollbar max-w-full">
         {[
           { id: 'branding', label: 'Identitas Lembaga & Privasi' },
+          { id: 'violations', label: 'Aturan Pelanggaran & Gadget' },
           { id: 'staff', label: 'Akun Pengawas' },
           { id: 'logs', label: 'Log Pelanggaran & Audit' },
           { id: 'qa', label: 'Pengujian & Uji Beban 1.300 Peserta' },
@@ -447,6 +496,195 @@ export const SystemSettingsAndAuditPanel: React.FC<{
             </label>
           </div>
 
+          {/* Pengaturan Kartu Peserta Ujian */}
+          <div className="space-y-3 pt-4 border-t border-slate-100 text-sm">
+            <div>
+              <h4 className="font-bold text-slate-800 text-xs">Pengaturan Menu &amp; Cetak Kartu Peserta Ujian</h4>
+              <p className="text-[11px] text-slate-500 mt-0.5">
+                Atur apakah menu Kartu Peserta Ujian tampil di portal siswa, izin unduh PDF / cetak, serta format keterangan kartu resmi.
+              </p>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              <label className="flex items-start gap-2.5 p-3 rounded-xl bg-sky-50/70 border border-sky-200 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={secForm.participantCard?.enabled !== false}
+                  onChange={(e) =>
+                    setSecForm({
+                      ...secForm,
+                      participantCard: {
+                        ...(secForm.participantCard || DEFAULT_PARTICIPANT_CARD),
+                        enabled: e.target.checked,
+                      },
+                    })
+                  }
+                  className="mt-0.5 w-4 h-4 rounded border-slate-300"
+                />
+                <div>
+                  <p className="text-xs font-bold text-sky-950">Tampilkan Menu Kartu Peserta di Siswa</p>
+                  <p className="text-[11px] text-slate-600">Siswa dapat melihat kartu peserta dari sidebar portal.</p>
+                </div>
+              </label>
+
+              <label className="flex items-start gap-2.5 p-3 rounded-xl bg-emerald-50/70 border border-emerald-200 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={secForm.participantCard?.allowStudentDownload !== false}
+                  onChange={(e) =>
+                    setSecForm({
+                      ...secForm,
+                      participantCard: {
+                        ...(secForm.participantCard || DEFAULT_PARTICIPANT_CARD),
+                        allowStudentDownload: e.target.checked,
+                      },
+                    })
+                  }
+                  className="mt-0.5 w-4 h-4 rounded border-slate-300"
+                />
+                <div>
+                  <p className="text-xs font-bold text-emerald-950">Izinkan Siswa Unduh PDF Kartu</p>
+                  <p className="text-[11px] text-slate-600">Aktifkan tombol Unduh PDF di menu Kartu Peserta siswa.</p>
+                </div>
+              </label>
+
+              <label className="flex items-start gap-2.5 p-3 rounded-xl bg-teal-50/70 border border-teal-200 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={secForm.participantCard?.allowStudentPrint !== false}
+                  onChange={(e) =>
+                    setSecForm({
+                      ...secForm,
+                      participantCard: {
+                        ...(secForm.participantCard || DEFAULT_PARTICIPANT_CARD),
+                        allowStudentPrint: e.target.checked,
+                      },
+                    })
+                  }
+                  className="mt-0.5 w-4 h-4 rounded border-slate-300"
+                />
+                <div>
+                  <p className="text-xs font-bold text-teal-950">Izinkan Siswa Cetak Kartu</p>
+                  <p className="text-[11px] text-slate-600">Aktifkan tombol Cetak Kartu di menu Kartu Peserta siswa.</p>
+                </div>
+              </label>
+
+              <label className="flex items-start gap-2.5 p-3 rounded-xl bg-amber-50/70 border border-amber-200 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={Boolean(secForm.participantCard?.showPinOnCard)}
+                  onChange={(e) =>
+                    setSecForm({
+                      ...secForm,
+                      participantCard: {
+                        ...(secForm.participantCard || DEFAULT_PARTICIPANT_CARD),
+                        showPinOnCard: e.target.checked,
+                      },
+                    })
+                  }
+                  className="mt-0.5 w-4 h-4 rounded border-slate-300"
+                />
+                <div>
+                  <p className="text-xs font-bold text-amber-950">Tampilkan PIN Ujian pada Kartu</p>
+                  <p className="text-[11px] text-slate-600">Sertakan PIN masuk ujian siswa pada tampilan dan PDF kartu.</p>
+                </div>
+              </label>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Judul Kartu Peserta</label>
+                <input
+                  type="text"
+                  maxLength={100}
+                  value={secForm.participantCard?.cardTitle ?? DEFAULT_PARTICIPANT_CARD.cardTitle}
+                  onChange={(e) =>
+                    setSecForm({
+                      ...secForm,
+                      participantCard: {
+                        ...(secForm.participantCard || DEFAULT_PARTICIPANT_CARD),
+                        cardTitle: e.target.value,
+                      },
+                    })
+                  }
+                  className="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs sm:text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Keterangan Ruang / Sesi Default</label>
+                <input
+                  type="text"
+                  maxLength={140}
+                  value={secForm.participantCard?.examSessionNote ?? DEFAULT_PARTICIPANT_CARD.examSessionNote}
+                  onChange={(e) =>
+                    setSecForm({
+                      ...secForm,
+                      participantCard: {
+                        ...(secForm.participantCard || DEFAULT_PARTICIPANT_CARD),
+                        examSessionNote: e.target.value,
+                      },
+                    })
+                  }
+                  className="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs sm:text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Jabatan Pengesah Kartu</label>
+                <input
+                  type="text"
+                  maxLength={100}
+                  value={secForm.participantCard?.signerTitle ?? DEFAULT_PARTICIPANT_CARD.signerTitle}
+                  onChange={(e) =>
+                    setSecForm({
+                      ...secForm,
+                      participantCard: {
+                        ...(secForm.participantCard || DEFAULT_PARTICIPANT_CARD),
+                        signerTitle: e.target.value,
+                      },
+                    })
+                  }
+                  className="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs sm:text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Nama Pejabat / Ketua Panitia (Opsional)</label>
+                <input
+                  type="text"
+                  maxLength={120}
+                  placeholder="Contoh: Drs. Hendra Wijaya, M.Pd"
+                  value={secForm.participantCard?.signerName ?? ''}
+                  onChange={(e) =>
+                    setSecForm({
+                      ...secForm,
+                      participantCard: {
+                        ...(secForm.participantCard || DEFAULT_PARTICIPANT_CARD),
+                        signerName: e.target.value,
+                      },
+                    })
+                  }
+                  className="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs sm:text-sm"
+                />
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">Catatan / Tata Tertib Singkat di Kartu</label>
+              <textarea
+                rows={2}
+                maxLength={400}
+                value={secForm.participantCard?.cardNote ?? DEFAULT_PARTICIPANT_CARD.cardNote}
+                onChange={(e) =>
+                  setSecForm({
+                    ...secForm,
+                    participantCard: {
+                      ...(secForm.participantCard || DEFAULT_PARTICIPANT_CARD),
+                      cardNote: e.target.value,
+                    },
+                  })
+                }
+                className="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs"
+              />
+            </div>
+          </div>
+
           <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
             <div className="flex flex-wrap items-center gap-2">
               <a
@@ -468,6 +706,356 @@ export const SystemSettingsAndAuditPanel: React.FC<{
           </div>
         </form>
       )}
+
+      {subTab === 'violations' && (() => {
+        const currentPolicy: ViolationPolicySettings = secForm.violationPolicy || DEFAULT_VIOLATION_POLICY_CLIENT;
+        const updatePolicy = (updater: (prev: ViolationPolicySettings) => ViolationPolicySettings) => {
+          setSecForm((prev) => ({
+            ...prev,
+            violationPolicy: updater(prev.violationPolicy || DEFAULT_VIOLATION_POLICY_CLIENT),
+          }));
+        };
+        const handleAddBrand = () => {
+          const clean = newBrandName.trim().toUpperCase();
+          if (!clean) return;
+          if (currentPolicy.brandExceptions.some((b) => b.brand.toUpperCase() === clean)) {
+            setBanner({ type: 'err', text: `Merek "${clean}" sudah ada dalam daftar pengecualian.` });
+            return;
+          }
+          updatePolicy((p) => ({
+            ...p,
+            brandExceptions: [
+              ...p.brandExceptions,
+              {
+                brand: clean,
+                excusedEventTypes: ['tombol_home', 'jendela_lain_di_atas_aplikasi', 'layar_terbagi_split_screen'],
+                reasonNote: newBrandNote.trim() || `pengecualian ${clean}`,
+                enabled: true,
+              },
+            ],
+          }));
+          setNewBrandName('');
+          setNewBrandNote('');
+        };
+
+        return (
+          <form onSubmit={handleSaveSettings} className="space-y-6">
+            {/* Ringkasan Aturan Global */}
+            <div className="bg-white border border-slate-200 rounded-2xl p-5 space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-3">
+                <div>
+                  <h3 className="font-display font-bold text-slate-900 text-base">
+                    Kebijakan Pelanggaran Lintas Perangkat, Sirene, &amp; Auto-Unlock
+                  </h3>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Atur poin, mode penindakan (catat saja / tambah poin / kunci langsung), serta durasi buka kunci otomatis per jenis pelanggaran.
+                  </p>
+                </div>
+                <button
+                  type="submit"
+                  disabled={busy}
+                  className="px-4 py-2 rounded-xl bg-blue-900 hover:bg-blue-800 text-white text-xs sm:text-sm font-semibold disabled:opacity-50"
+                >
+                  Simpan Kebijakan Pelanggaran
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+                <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
+                  <label className="flex items-center gap-2 font-semibold text-slate-800">
+                    <input
+                      type="checkbox"
+                      checked={currentPolicy.blockBackNavigation !== false}
+                      onChange={(e) =>
+                        updatePolicy((p) => ({ ...p, blockBackNavigation: e.target.checked }))
+                      }
+                    />
+                    <span>Tolak Tombol Kembali (Back) pada Android &amp; Browser</span>
+                  </label>
+                  <p className="text-[11px] text-slate-600">
+                    Tombol Back tidak pernah dihitung sebagai pelanggaran ataupun menambah poin; sistem hanya menolak perpindahan halaman.
+                  </p>
+                </div>
+
+                <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-between gap-3">
+                  <div>
+                    <p className="font-semibold text-slate-800">Toleransi Terputus WiFi Ujian (Detik)</p>
+                    <p className="text-[11px] text-slate-600 mt-0.5">
+                      Batas waktu terlepas dari WiFi ujian sebelum tercatat sebagai pelanggaran (bawaan: 10 detik).
+                    </p>
+                  </div>
+                  <input
+                    type="number"
+                    min={5}
+                    max={120}
+                    value={currentPolicy.wifiDisconnectGraceSeconds ?? 10}
+                    onChange={(e) =>
+                      updatePolicy((p) => ({ ...p, wifiDisconnectGraceSeconds: Math.max(5, Number(e.target.value) || 10) }))
+                    }
+                    className="w-20 px-2.5 py-1.5 rounded-lg border border-slate-300 font-mono text-sm bg-white shrink-0"
+                  />
+                </div>
+              </div>
+
+              {/* 14 Violation Rules Matrix */}
+              <div className="overflow-x-auto border border-slate-200 rounded-xl">
+                <table className="w-full text-xs text-left">
+                  <thead className="bg-slate-50 border-b border-slate-200 font-semibold text-slate-600">
+                    <tr>
+                      <th className="px-3 py-2.5">Aktif</th>
+                      <th className="px-3 py-2.5">Bentuk Pelanggaran &amp; Deskripsi</th>
+                      <th className="px-3 py-2.5">Perangkat</th>
+                      <th className="px-3 py-2.5">Tindakan</th>
+                      <th className="px-3 py-2.5 w-20">Poin</th>
+                      <th className="px-3 py-2.5 w-32">Buka Otomatis (Menit)</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {currentPolicy.rules.map((rule) => (
+                      <tr key={rule.code} className="hover:bg-slate-50/70 align-top">
+                        <td className="px-3 py-3">
+                          <input
+                            type="checkbox"
+                            checked={rule.enabled}
+                            onChange={(e) =>
+                              updatePolicy((p) => ({
+                                ...p,
+                                rules: p.rules.map((r) => (r.code === rule.code ? { ...r, enabled: e.target.checked } : r)),
+                              }))
+                            }
+                            className="w-4 h-4 rounded border-slate-300"
+                          />
+                        </td>
+                        <td className="px-3 py-3 max-w-sm">
+                          <p className="font-bold text-slate-900">{rule.label}</p>
+                          <p className="text-[11px] text-slate-500 mt-0.5 leading-relaxed">{rule.description}</p>
+                          <div className="flex flex-wrap gap-2 mt-1.5">
+                            {rule.code === 'keluar_jendela_ujian' && (
+                              <label className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-rose-700 bg-rose-50 border border-rose-200 px-2 py-0.5 rounded">
+                                <input
+                                  type="checkbox"
+                                  checked={Boolean(rule.triggerSirenRedScreen)}
+                                  onChange={(e) =>
+                                    updatePolicy((p) => ({
+                                      ...p,
+                                      rules: p.rules.map((r) =>
+                                        r.code === rule.code ? { ...r, triggerSirenRedScreen: e.target.checked } : r
+                                      ),
+                                    }))
+                                  }
+                                />
+                                <span>Layar Merah + Sirene Desktop</span>
+                              </label>
+                            )}
+                            {(rule.code === 'kamera_tertutup' || rule.code === 'kamera_mati_atau_dicabut') && (
+                              <span className="inline-flex items-center text-[11px] font-semibold text-amber-800 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded">
+                                Soal ditutup otomatis s/d kamera pulih
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                        <td className="px-3 py-3 whitespace-nowrap">
+                          <span className="px-2 py-0.5 rounded bg-indigo-50 border border-indigo-200 text-indigo-800 font-semibold text-[11px]">
+                            {rule.devices}
+                          </span>
+                        </td>
+                        <td className="px-3 py-3">
+                          <select
+                            value={rule.mode}
+                            onChange={(e) =>
+                              updatePolicy((p) => ({
+                                ...p,
+                                rules: p.rules.map((r) =>
+                                  r.code === rule.code ? { ...r, mode: e.target.value as ViolationRuleMode } : r
+                                ),
+                              }))
+                            }
+                            className="px-2 py-1.5 rounded-lg border border-slate-300 bg-white text-xs font-medium"
+                          >
+                            <option value="record_only">Catat Saja (0 Poin)</option>
+                            <option value="add_points">Tambah Poin</option>
+                            <option value="instant_lock">Kunci Langsung</option>
+                          </select>
+                        </td>
+                        <td className="px-3 py-3">
+                          <input
+                            type="number"
+                            min={0}
+                            max={20}
+                            disabled={rule.mode === 'record_only'}
+                            value={rule.mode === 'record_only' ? 0 : rule.points}
+                            onChange={(e) =>
+                              updatePolicy((p) => ({
+                                ...p,
+                                rules: p.rules.map((r) =>
+                                  r.code === rule.code ? { ...r, points: Math.max(0, Number(e.target.value) || 0) } : r
+                                ),
+                              }))
+                            }
+                            className="w-16 px-2 py-1.5 rounded-lg border border-slate-300 font-mono disabled:bg-slate-100"
+                          />
+                        </td>
+                        <td className="px-3 py-3">
+                          <div className="space-y-1">
+                            <input
+                              type="number"
+                              min={0}
+                              max={120}
+                              value={rule.autoUnlockMinutes}
+                              onChange={(e) =>
+                                updatePolicy((p) => ({
+                                  ...p,
+                                  rules: p.rules.map((r) =>
+                                    r.code === rule.code ? { ...r, autoUnlockMinutes: Math.max(0, Number(e.target.value) || 0) } : r
+                                  ),
+                                }))
+                              }
+                              className="w-20 px-2 py-1.5 rounded-lg border border-slate-300 font-mono"
+                            />
+                            <p className="text-[10px] text-slate-500">
+                              {rule.autoUnlockMinutes > 0 ? `Buka otomatis ${rule.autoUnlockMinutes} mnt` : '0 = Manual Pengawas'}
+                            </p>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Pengecualian Merek Gadget (ADVAN, dll.) */}
+            <div className="bg-white border border-slate-200 rounded-2xl p-5 space-y-4">
+              <div>
+                <h4 className="font-display font-bold text-slate-900 text-sm">
+                  Pengecualian Merek Gadget (Tidak Menambah Poin Pelanggaran)
+                </h4>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Perangkat dengan merek tertentu (misalnya tablet ADVAN dengan tombol Home mengambang) tetap dicatat di riwayat dengan keterangan
+                  <span className="font-semibold text-emerald-700"> &ldquo;... dimaafkan (pengecualian ADVAN)&rdquo;</span> tanpa menambah poin atau mengunci sesi.
+                </p>
+              </div>
+
+              <div className="space-y-3">
+                {currentPolicy.brandExceptions.map((exc, idx) => (
+                  <div key={exc.brand} className="p-3.5 rounded-xl border border-slate-200 bg-slate-50/70 space-y-2.5 text-xs">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-center gap-2.5">
+                        <input
+                          type="checkbox"
+                          checked={exc.enabled}
+                          onChange={(e) =>
+                            updatePolicy((p) => ({
+                              ...p,
+                              brandExceptions: p.brandExceptions.map((b, i) =>
+                                i === idx ? { ...b, enabled: e.target.checked } : b
+                              ),
+                            }))
+                          }
+                        />
+                        <span className="font-mono font-bold text-sm text-blue-900">{exc.brand}</span>
+                        <input
+                          type="text"
+                          value={exc.reasonNote}
+                          onChange={(e) =>
+                            updatePolicy((p) => ({
+                              ...p,
+                              brandExceptions: p.brandExceptions.map((b, i) =>
+                                i === idx ? { ...b, reasonNote: e.target.value } : b
+                              ),
+                            }))
+                          }
+                          placeholder="Keterangan log (misal: pengecualian ADVAN)"
+                          className="px-2.5 py-1 rounded-lg border border-slate-300 bg-white text-xs w-56"
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          updatePolicy((p) => ({
+                            ...p,
+                            brandExceptions: p.brandExceptions.filter((_, i) => i !== idx),
+                          }))
+                        }
+                        className="px-2.5 py-1 rounded-lg border border-red-200 text-red-700 hover:bg-red-50 font-semibold"
+                      >
+                        Hapus Merek
+                      </button>
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {[
+                        'tombol_home',
+                        'jendela_lain_di_atas_aplikasi',
+                        'layar_terbagi_split_screen',
+                        'keluar_aplikasi',
+                        'sematan_layar_dilepas',
+                      ].map((evCode) => {
+                        const checked = exc.excusedEventTypes.includes(evCode);
+                        return (
+                          <label
+                            key={evCode}
+                            className={`px-2.5 py-1 rounded-lg border cursor-pointer ${
+                              checked
+                                ? 'bg-emerald-50 border-emerald-400 text-emerald-900 font-semibold'
+                                : 'bg-white border-slate-200 text-slate-600'
+                            }`}
+                          >
+                            <input
+                              type="checkbox"
+                              className="sr-only"
+                              checked={checked}
+                              onChange={(e) =>
+                                updatePolicy((p) => ({
+                                  ...p,
+                                  brandExceptions: p.brandExceptions.map((b, i) =>
+                                    i === idx
+                                      ? {
+                                          ...b,
+                                          excusedEventTypes: e.target.checked
+                                            ? [...b.excusedEventTypes, evCode]
+                                            : b.excusedEventTypes.filter((c) => c !== evCode),
+                                        }
+                                      : b
+                                  ),
+                                }))
+                              }
+                            />
+                            {getViolationLabel(evCode)}
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-100 text-xs">
+                <input
+                  type="text"
+                  value={newBrandName}
+                  onChange={(e) => setNewBrandName(e.target.value)}
+                  placeholder="Tambah Merek Gadget (misal: EVERCOSS / ZYREX)"
+                  className="px-3 py-2 rounded-xl border border-slate-300 uppercase w-64"
+                />
+                <input
+                  type="text"
+                  value={newBrandNote}
+                  onChange={(e) => setNewBrandNote(e.target.value)}
+                  placeholder="Catatan pengecualian (opsional)"
+                  className="px-3 py-2 rounded-xl border border-slate-300 w-64"
+                />
+                <button
+                  type="button"
+                  onClick={handleAddBrand}
+                  className="px-3.5 py-2 rounded-xl border border-blue-900 text-blue-900 hover:bg-blue-50 font-semibold"
+                >
+                  + Tambah Merek
+                </button>
+              </div>
+            </div>
+          </form>
+        );
+      })()}
 
       {subTab === 'staff' && (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
@@ -762,9 +1350,21 @@ export const SystemSettingsAndAuditPanel: React.FC<{
                         </span>
                       </div>
                       <p className="text-slate-600">{String(vl.exam_title)}</p>
-                      <div className="flex items-center justify-between text-[11px] bg-slate-50 px-2.5 py-1.5 rounded-lg border border-slate-200/60">
-                        <span className="font-semibold text-slate-800">{String(vl.event_type)} (#{String(vl.occurrence_number)})</span>
-                        <span className="text-slate-600">{vl.admin_action ? `${vl.admin_action}: ${vl.action_notes}` : vl.triggered_lock ? 'Auto-Lock' : '-'}</span>
+                      <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] bg-slate-50 px-2.5 py-1.5 rounded-lg border border-slate-200/60">
+                        <span className="font-semibold text-slate-800">
+                          {getViolationLabel(String(vl.event_type))} (#{String(vl.occurrence_number)})
+                          {Number(vl.duration_seconds || 0) > 0 ? ` · ${Number(vl.duration_seconds)} dtk` : ''}
+                          {Boolean(vl.device_brand) ? ` · ${String(vl.device_brand)}` : ''}
+                        </span>
+                        <span className={Boolean(vl.is_excused) ? 'text-emerald-700 font-semibold' : 'text-slate-600'}>
+                          {Boolean(vl.is_excused)
+                            ? String(vl.excuse_reason || 'Dimaafkan')
+                            : Boolean(vl.admin_action)
+                            ? `${String(vl.admin_action)}: ${String(vl.action_notes || '')}`
+                            : Boolean(vl.triggered_lock)
+                            ? `Auto-Lock (+${Number(vl.points_added || 0)} poin)`
+                            : `+${Number(vl.points_added || 0)} poin`}
+                        </span>
                       </div>
                     </div>
                   );
@@ -793,17 +1393,21 @@ export const SystemSettingsAndAuditPanel: React.FC<{
                     <th className="px-4 py-2.5">Waktu Server</th>
                     <th className="px-4 py-2.5">Siswa</th>
                     <th className="px-4 py-2.5">Ujian</th>
-                    <th className="px-4 py-2.5">Kejadian</th>
-                    <th className="px-4 py-2.5">Tindakan Admin</th>
+                    <th className="px-4 py-2.5">Kejadian &amp; Perangkat</th>
+                    <th className="px-4 py-2.5">Poin / Durasi</th>
+                    <th className="px-4 py-2.5">Status / Tindakan</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {violationLogs.length === 0 ? (
-                    <tr><td colSpan={6} className="p-6 text-center text-slate-500">Belum ada catatan kejadian.</td></tr>
+                    <tr><td colSpan={7} className="p-6 text-center text-slate-500">Belum ada catatan kejadian.</td></tr>
                   ) : (
                     violationLogs.map((vl, idx) => {
                       const vlId = String(vl.id || idx);
                       const checked = selectedViolationIds.includes(vlId);
+                      const isExcused = Boolean(vl.is_excused);
+                      const durationSec = Number(vl.duration_seconds || 0);
+                      const pts = Number(vl.points_added || 0);
                       return (
                         <tr key={vlId} className={checked ? 'bg-blue-50/40' : ''}>
                           <td className="pl-4 pr-2 py-2.5">
@@ -821,8 +1425,34 @@ export const SystemSettingsAndAuditPanel: React.FC<{
                           <td className="px-4 py-2.5 font-mono tabular-nums">{new Date(String(vl.server_timestamp)).toLocaleString('id-ID')}</td>
                           <td className="px-4 py-2.5">{String(vl.full_name)} ({String(vl.nis)})</td>
                           <td className="px-4 py-2.5">{String(vl.exam_title)}</td>
-                          <td className="px-4 py-2.5 font-semibold">{String(vl.event_type)} (#{String(vl.occurrence_number)})</td>
-                          <td className="px-4 py-2.5">{vl.admin_action ? `${vl.admin_action}: ${vl.action_notes}` : vl.triggered_lock ? 'Auto-Lock' : '-'}</td>
+                          <td className="px-4 py-2.5">
+                            <p className="font-semibold text-slate-900">
+                              {getViolationLabel(String(vl.event_type))} (#{String(vl.occurrence_number)})
+                            </p>
+                            {Boolean(vl.device_type || vl.device_brand) && (
+                              <p className="text-[11px] font-mono text-slate-500">
+                                {String(vl.device_type || '-')}
+                                {Boolean(vl.device_brand) ? ` · ${String(vl.device_brand)}` : ''}
+                              </p>
+                            )}
+                          </td>
+                          <td className="px-4 py-2.5 font-mono tabular-nums">
+                            <span>{isExcused ? '0 poin' : `+${pts} poin`}</span>
+                            {durationSec > 0 && (
+                              <span className="block text-[11px] text-slate-500">Keluar {durationSec} detik</span>
+                            )}
+                          </td>
+                          <td className="px-4 py-2.5">
+                            {isExcused ? (
+                              <span className="font-semibold text-emerald-700">{String(vl.excuse_reason || 'Dimaafkan')}</span>
+                            ) : Boolean(vl.admin_action) ? (
+                              `${String(vl.admin_action)}: ${String(vl.action_notes || '')}`
+                            ) : Boolean(vl.triggered_lock) ? (
+                              <span className="font-semibold text-rose-700">Auto-Lock</span>
+                            ) : (
+                              '-'
+                            )}
+                          </td>
                         </tr>
                       );
                     })

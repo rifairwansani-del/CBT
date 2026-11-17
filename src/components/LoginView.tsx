@@ -92,11 +92,10 @@ export const LoginView: React.FC<LoginViewProps> = ({ branding, onLoginSuccess }
         </span>
       </header>
 
-      {/* Main Cohesive Split-Canvas Unified Login */}
+      {/* Centered Unified Login Card */}
       <main className="relative z-10 flex-1 flex items-center justify-center px-4 py-6 sm:px-8 sm:py-10">
-        <div className="w-full max-w-5xl bg-white rounded-2xl border border-indigo-200/80 shadow-[0_24px_60px_-15px_rgba(67,56,202,0.22)] overflow-hidden grid grid-cols-1 lg:grid-cols-12 items-stretch">
-          {/* Right Column on Desktop, First on Mobile: Unified Login Form */}
-          <section className="order-1 lg:order-2 lg:col-span-6 flex flex-col justify-between bg-white relative">
+        <div className="w-full max-w-lg bg-white rounded-2xl border border-indigo-200/80 shadow-[0_24px_60px_-15px_rgba(67,56,202,0.22)] overflow-hidden">
+          <section className="flex flex-col justify-between bg-white relative">
             <div className="h-1.5 w-full bg-gradient-to-r from-blue-600 via-violet-500 via-amber-500 to-emerald-500" aria-hidden="true" />
             <div className="p-6 sm:p-10 flex-1 flex flex-col justify-between">
               <div>
@@ -237,91 +236,14 @@ export const LoginView: React.FC<LoginViewProps> = ({ branding, onLoginSuccess }
               </details>
             </div>
           </section>
-
-          {/* Left Column on Desktop, Second on Mobile: Atmospheric Multi-Hue TKA Showcase */}
-          <section className="order-2 lg:order-1 lg:col-span-6 relative bg-gradient-to-br from-[#0f1c4d] via-[#1b2d7a] to-[#0d5a58] text-white p-6 sm:p-10 flex flex-col justify-between overflow-hidden">
-            {/* Subtle Architectural Grid & Multi-Color Lighting Depth */}
-            <div
-              aria-hidden="true"
-              className="pointer-events-none absolute inset-0 opacity-20"
-              style={{
-                backgroundImage:
-                  'linear-gradient(to right, rgba(255,255,255,0.08) 1px, transparent 1px), linear-gradient(to bottom, rgba(255,255,255,0.08) 1px, transparent 1px)',
-                backgroundSize: '32px 32px',
-              }}
-            />
-            <div
-              aria-hidden="true"
-              className="pointer-events-none absolute -top-20 -right-20 w-72 h-72 rounded-full bg-violet-500/30 blur-3xl"
-            />
-            <div
-              aria-hidden="true"
-              className="pointer-events-none absolute -bottom-24 -left-20 w-72 h-72 rounded-full bg-emerald-400/25 blur-3xl"
-            />
-            <div
-              aria-hidden="true"
-              className="pointer-events-none absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-56 h-56 rounded-full bg-sky-400/15 blur-3xl"
-            />
-
-            <div className="relative z-10">
-              <p className="text-xs font-bold text-amber-300 tracking-wide">
-                Portal Terpadu CBT Model TKA
-              </p>
-              <h2 className="mt-2 text-2xl sm:text-[28px] font-display font-bold leading-snug text-balance">
-                Satu Pintu Masuk untuk Peserta, Pengawas, &amp; Admin
-              </h2>
-              <p className="mt-3 text-sm text-indigo-100/90 leading-relaxed max-w-md">
-                Terintegrasi penuh untuk pelaksanaan ujian berbasis komputer di ponsel, tablet, maupun komputer dengan penyimpanan jawaban otomatis dan monitoring waktu nyata.
-              </p>
-
-              {/* Color-Coded 01 / 02 / 03 Role Guide */}
-              <div className="mt-7 sm:mt-8 border-t border-white/15 divide-y divide-white/10">
-                <div className="py-3.5 flex items-start gap-3.5">
-                  <span className="font-mono text-xs font-bold text-sky-300 bg-sky-500/20 border border-sky-400/30 rounded-md px-1.5 py-0.5 tabular-nums shrink-0">
-                    01
-                  </span>
-                  <div>
-                    <p className="text-sm font-semibold text-white">Peserta Ujian (Siswa)</p>
-                    <p className="text-xs text-sky-100/85 mt-0.5 leading-relaxed">
-                      Masuk dengan <span className="font-mono text-sky-200">NIS</span> dan{' '}
-                      <span className="font-mono text-sky-200">NISN</span>, periksa foto resmi, lalu inputkan PIN / Token saat memulai tes.
-                    </p>
-                  </div>
-                </div>
-                <div className="py-3.5 flex items-start gap-3.5">
-                  <span className="font-mono text-xs font-bold text-emerald-300 bg-emerald-500/20 border border-emerald-400/30 rounded-md px-1.5 py-0.5 tabular-nums shrink-0">
-                    02
-                  </span>
-                  <div>
-                    <p className="text-sm font-semibold text-white">Pengawas Ruang</p>
-                    <p className="text-xs text-emerald-100/85 mt-0.5 leading-relaxed">
-                      Masuk dengan akun pengawas untuk memantau peserta aktif, log pelanggaran, kamera ringan, dan membuka sesi terkunci.
-                    </p>
-                  </div>
-                </div>
-                <div className="py-3.5 flex items-start gap-3.5">
-                  <span className="font-mono text-xs font-bold text-amber-300 bg-amber-500/20 border border-amber-400/30 rounded-md px-1.5 py-0.5 tabular-nums shrink-0">
-                    03
-                  </span>
-                  <div>
-                    <p className="text-sm font-semibold text-white">Admin Lembaga</p>
-                    <p className="text-xs text-amber-100/85 mt-0.5 leading-relaxed">
-                      Kelola peserta, unggah foto resmi, susun bank soal model TKA, atur jadwal ujian, dan ekspor rapor penilaian.
-                    </p>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div className="relative z-10 mt-6 pt-4 border-t border-white/15 flex flex-wrap items-center justify-between gap-2 text-xs text-sky-100/80">
-              <span>{branding.address}</span>
-              <span className="font-mono tabular-nums text-amber-200 sm:hidden">
-                TA {branding.academicYear}
-              </span>
-            </div>
-          </section>
         </div>
       </main>
+
+      {branding.address && (
+        <footer className="relative z-10 text-center text-xs text-slate-500 pb-5 px-4">
+          {branding.address}
+        </footer>
+      )}
     </div>
   );
 };

@@ -16,6 +16,7 @@ import {
   X,
 } from 'lucide-react';
 import { apiFetch, withAuthTokenUrl } from '../../lib/api.ts';
+import { getViolationLabel } from '../../lib/violationCatalog.ts';
 import { StudentAvatar } from '../StudentAvatar.tsx';
 import { ConfirmDialog } from './ConfirmDialog.tsx';
 import type { AuthUser, ChatMessageItem } from '../../types/cbt.ts';
@@ -32,10 +33,14 @@ interface ParticipantRow {
   status: string;
   rawStatus: string;
   violationCount: number;
+  violationPoints?: number;
   proctoringCount: number;
   answeredCount: number;
   finalScore: number | null;
   lockReason: string | null;
+  lockedUntil?: string | null;
+  deviceType?: string;
+  deviceBrand?: string;
   lastHeartbeatAt: string | null;
 }
 
@@ -50,7 +55,11 @@ interface SessionDetailPayload {
     photoUrl: string | null;
     status: string;
     lock_reason: string | null;
+    locked_until?: string | null;
     violation_count: number;
+    violation_points?: number;
+    device_type?: string;
+    device_brand?: string;
     server_end_at: string;
   };
   violations: Array<{
@@ -60,6 +69,12 @@ interface SessionDetailPayload {
     triggered_lock: number;
     admin_action: string | null;
     action_notes: string | null;
+    device_type?: string;
+    device_brand?: string;
+    duration_seconds?: number;
+    points_added?: number;
+    is_excused?: number;
+    excuse_reason?: string | null;
     server_timestamp: string;
   }>;
   proctoring: Array<{
@@ -842,7 +857,10 @@ export const LiveMonitoringPanel: React.FC<{ user: AuthUser }> = ({ user }) => {
                       <StudentAvatar photoUrl={p.photoUrl} fullName={p.fullName} size="sm" />
                       <div className="min-w-0">
                         <p className="font-semibold text-sm text-slate-900 truncate">{p.fullName}</p>
-                        <p className="text-xs font-mono text-slate-500 tabular-nums">{p.nis} · {p.className}</p>
+                        <p className="text-xs font-mono text-slate-500 tabular-nums">
+                          {p.nis} · {p.className}
+                          {p.deviceType ? ` · ${p.deviceType}${p.deviceBrand ? ` (${p.deviceBrand})` : ''}` : ''}
+                        </p>
                       </div>
                     </div>
                     <span className="text-xs font-semibold shrink-0">
@@ -858,7 +876,9 @@ export const LiveMonitoringPanel: React.FC<{ user: AuthUser }> = ({ user }) => {
                     <span>Terjawab: <strong className="font-mono text-slate-900">{p.answeredCount} butir</strong></span>
                     <span>
                       {p.violationCount > 0 || p.proctoringCount > 0 ? (
-                        <strong className="text-amber-800">{p.violationCount} log · {p.proctoringCount} kamera</strong>
+                        <strong className="text-amber-800">
+                          {p.violationCount} log ({p.violationPoints ?? 0} poin) · {p.proctoringCount} kamera
+                        </strong>
                       ) : (
                         <span className="text-slate-400">Normal</span>
                       )}
@@ -1007,7 +1027,10 @@ export const LiveMonitoringPanel: React.FC<{ user: AuthUser }> = ({ user }) => {
                         <StudentAvatar photoUrl={p.photoUrl} fullName={p.fullName} size="sm" />
                         <div>
                           <p className="font-semibold text-slate-900">{p.fullName}</p>
-                          <p className="text-xs font-mono text-slate-500 tabular-nums">{p.nis}</p>
+                          <p className="text-xs font-mono text-slate-500 tabular-nums">
+                            {p.nis}
+                            {p.deviceType ? ` · ${p.deviceType}${p.deviceBrand ? ` (${p.deviceBrand})` : ''}` : ''}
+                          </p>
                         </div>
                       </div>
                     </td>
@@ -1015,7 +1038,16 @@ export const LiveMonitoringPanel: React.FC<{ user: AuthUser }> = ({ user }) => {
                     <td className="px-4 py-3 text-xs font-semibold">
                       {p.status === 'not_logged_in' && <span className="text-slate-500">Belum Login</span>}
                       {p.status === 'in_progress' && <span className="text-blue-900">Sedang Ujian</span>}
-                      {p.status === 'locked' && <span className="text-red-700">Terkunci</span>}
+                      {p.status === 'locked' && (
+                        <div>
+                          <span className="text-red-700">Terkunci</span>
+                          {p.lockedUntil && (
+                            <span className="block text-[10px] font-mono text-amber-700">
+                              Auto buka: {new Date(p.lockedUntil).toLocaleTimeString('id-ID')}
+                            </span>
+                          )}
+                        </div>
+                      )}
                       {p.status === 'disconnected' && <span className="text-amber-700">Koneksi Terputus</span>}
                       {(p.status === 'submitted' || p.status === 'expired') && <span className="text-emerald-700">Selesai</span>}
                     </td>
@@ -1023,7 +1055,7 @@ export const LiveMonitoringPanel: React.FC<{ user: AuthUser }> = ({ user }) => {
                     <td className="px-4 py-3 font-mono text-xs tabular-nums">
                       {p.violationCount > 0 || p.proctoringCount > 0 ? (
                         <span className="text-amber-800 font-semibold">
-                          {p.violationCount} log · {p.proctoringCount} kamera
+                          {p.violationCount} log ({p.violationPoints ?? 0} poin) · {p.proctoringCount} kamera
                         </span>
                       ) : (
                         <span className="text-slate-400">Normal</span>
@@ -1167,10 +1199,11 @@ export const LiveMonitoringPanel: React.FC<{ user: AuthUser }> = ({ user }) => {
 
               {/* Session Control Actions (Lock, Unlock, Reset, Extend Time, Force Submit, Message) */}
               <section className="p-4 rounded-2xl border border-slate-200 bg-white space-y-3">
-                <div className="flex items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
                   <h4 className="text-sm font-display font-bold text-slate-900">Tindakan Admin &amp; Pengawas pada Sesi Ini</h4>
                   <span className="text-xs font-mono text-slate-500 tabular-nums">
-                    Batas akhir: {new Date(detail.session.server_end_at).toLocaleTimeString('id-ID')}
+                    {detail.session.device_type ? `${detail.session.device_type}${detail.session.device_brand ? ` (${detail.session.device_brand})` : ''} · ` : ''}
+                    Poin: {detail.session.violation_points ?? 0} · Batas akhir: {new Date(detail.session.server_end_at).toLocaleTimeString('id-ID')}
                   </span>
                 </div>
 
@@ -1179,6 +1212,11 @@ export const LiveMonitoringPanel: React.FC<{ user: AuthUser }> = ({ user }) => {
                     <p className="text-xs font-bold text-red-900">
                       Sesi Terkunci: {detail.session.lock_reason || 'Melebihi batas perpindahan fokus.'}
                     </p>
+                    {detail.session.locked_until && (
+                      <p className="text-[11px] font-mono text-amber-800 font-semibold">
+                        Dijadwalkan terbuka otomatis pada {new Date(detail.session.locked_until).toLocaleString('id-ID')}
+                      </p>
+                    )}
                     {canUnlockOrReset ? (
                       <div className="space-y-2">
                         <input
@@ -1368,16 +1406,34 @@ export const LiveMonitoringPanel: React.FC<{ user: AuthUser }> = ({ user }) => {
 
               {/* Observed Violation Logs */}
               <section className="space-y-2">
-                <h4 className="text-sm font-display font-bold text-slate-900">Catatan Kejadian Browser Teramati ({detail.violations.length})</h4>
+                <h4 className="text-sm font-display font-bold text-slate-900">Catatan Pelanggaran &amp; Pengecualian ({detail.violations.length})</h4>
                 {detail.violations.length === 0 ? (
                   <p className="text-xs text-slate-500">Belum ada kejadian teramati.</p>
                 ) : (
                   <div className="border border-slate-200 rounded-xl divide-y divide-slate-100 text-xs">
                     {detail.violations.map((v) => (
                       <div key={v.id} className="p-3 flex justify-between gap-3">
-                        <div>
-                          <p className="font-semibold text-slate-800">{v.event_type}</p>
-                          {v.action_notes && <p className="text-slate-500 mt-0.5">Catatan: {v.action_notes}</p>}
+                        <div className="space-y-0.5">
+                          <p className="font-semibold text-slate-800">
+                            {getViolationLabel(v.event_type)} (#{v.occurrence_number})
+                            {v.device_brand ? ` · ${v.device_brand}` : v.device_type ? ` · ${v.device_type}` : ''}
+                          </p>
+                          <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                            <span className={v.is_excused ? 'text-emerald-700 font-semibold' : 'text-slate-600 font-mono'}>
+                              {v.is_excused
+                                ? `0 poin · ${v.excuse_reason || 'Dimaafkan'}`
+                                : `+${v.points_added ?? 0} poin`}
+                            </span>
+                            {Number(v.duration_seconds || 0) > 0 && (
+                              <span className="text-amber-700 font-mono font-semibold">
+                                · Durasi keluar: {v.duration_seconds} detik
+                              </span>
+                            )}
+                            {Boolean(v.triggered_lock) && (
+                              <span className="text-rose-700 font-semibold">· Memicu Kunci Sesi</span>
+                            )}
+                          </div>
+                          {v.action_notes && <p className="text-slate-500">Catatan: {v.action_notes}</p>}
                         </div>
                         <span className="font-mono text-slate-500 shrink-0 tabular-nums">
                           {new Date(v.server_timestamp).toLocaleTimeString('id-ID')}

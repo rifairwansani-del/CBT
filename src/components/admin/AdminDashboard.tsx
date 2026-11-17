@@ -461,7 +461,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           )}
 
           {section === 'monitoring' && <LiveMonitoringPanel user={user} />}
-          {section === 'students' && <StudentsAndPhotosPanel isAdmin={isAdmin} />}
+          {section === 'students' && <StudentsAndPhotosPanel isAdmin={isAdmin} branding={branding} />}
           {section === 'questions' && isAdmin && <QuestionBankPanel />}
           {section === 'exams' && isAdmin && <ExamsAndSchedulesPanel />}
           {section === 'analytics' && isAdmin && <AnalyticsAndReportsPanel branding={branding} />}

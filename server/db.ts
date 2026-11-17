@@ -129,6 +129,9 @@ export function initDatabase() {
       max_violations INTEGER NOT NULL DEFAULT 3,
       auto_lock_enabled INTEGER NOT NULL DEFAULT 1,
       require_fullscreen INTEGER NOT NULL DEFAULT 0,
+      require_camera INTEGER NOT NULL DEFAULT 0,
+      require_exam_wifi INTEGER NOT NULL DEFAULT 0,
+      allowed_wifi_ssid TEXT NOT NULL DEFAULT '',
       proctoring_enabled INTEGER NOT NULL DEFAULT 0,
       proctoring_sensitivity TEXT NOT NULL DEFAULT 'sedang',
       proctoring_tolerance INTEGER NOT NULL DEFAULT 5,
@@ -183,6 +186,8 @@ export function initDatabase() {
       rubric_id TEXT NOT NULL REFERENCES scoring_rubrics(id),
       session_token_hash TEXT NOT NULL,
       device_fingerprint TEXT NOT NULL DEFAULT '',
+      device_type TEXT NOT NULL DEFAULT 'web',
+      device_brand TEXT NOT NULL DEFAULT '',
       status TEXT NOT NULL CHECK(status IN ('not_started', 'in_progress', 'locked', 'submitted', 'expired')) DEFAULT 'in_progress',
       started_at TEXT NOT NULL,
       server_end_at TEXT NOT NULL,
@@ -190,7 +195,10 @@ export function initDatabase() {
       last_heartbeat_at TEXT NOT NULL,
       last_sync_at TEXT NOT NULL,
       violation_count INTEGER NOT NULL DEFAULT 0,
+      violation_points INTEGER NOT NULL DEFAULT 0,
       lock_reason TEXT,
+      locked_until TEXT,
+      locked_by_event_type TEXT,
       unlocked_by TEXT,
       unlocked_at TEXT,
       unlock_notes TEXT,
@@ -234,6 +242,12 @@ export function initDatabase() {
       student_id TEXT NOT NULL REFERENCES students(id) ON DELETE CASCADE,
       event_type TEXT NOT NULL,
       details_json TEXT NOT NULL DEFAULT '{}',
+      device_type TEXT NOT NULL DEFAULT 'web',
+      device_brand TEXT NOT NULL DEFAULT '',
+      duration_seconds INTEGER,
+      points_added INTEGER NOT NULL DEFAULT 1,
+      is_excused INTEGER NOT NULL DEFAULT 0,
+      excuse_reason TEXT NOT NULL DEFAULT '',
       occurrence_number INTEGER NOT NULL,
       triggered_lock INTEGER NOT NULL DEFAULT 0,
       admin_action TEXT,
@@ -376,6 +390,54 @@ export function initDatabase() {
   }
   if (!examCols.some((c) => c.name === 'class_configs_json')) {
     db.exec("ALTER TABLE exams ADD COLUMN class_configs_json TEXT NOT NULL DEFAULT '{}';");
+  }
+  if (!examCols.some((c) => c.name === 'require_camera')) {
+    db.exec('ALTER TABLE exams ADD COLUMN require_camera INTEGER NOT NULL DEFAULT 0;');
+  }
+  if (!examCols.some((c) => c.name === 'require_exam_wifi')) {
+    db.exec('ALTER TABLE exams ADD COLUMN require_exam_wifi INTEGER NOT NULL DEFAULT 0;');
+  }
+  if (!examCols.some((c) => c.name === 'allowed_wifi_ssid')) {
+    db.exec("ALTER TABLE exams ADD COLUMN allowed_wifi_ssid TEXT NOT NULL DEFAULT '';");
+  }
+
+  // Safe migration for exam_sessions: device metadata, violation points, auto-unlock window
+  const sessionCols = db.prepare('PRAGMA table_info(exam_sessions)').all() as Array<{ name: string }>;
+  if (!sessionCols.some((c) => c.name === 'device_type')) {
+    db.exec("ALTER TABLE exam_sessions ADD COLUMN device_type TEXT NOT NULL DEFAULT 'web';");
+  }
+  if (!sessionCols.some((c) => c.name === 'device_brand')) {
+    db.exec("ALTER TABLE exam_sessions ADD COLUMN device_brand TEXT NOT NULL DEFAULT '';");
+  }
+  if (!sessionCols.some((c) => c.name === 'violation_points')) {
+    db.exec('ALTER TABLE exam_sessions ADD COLUMN violation_points INTEGER NOT NULL DEFAULT 0;');
+  }
+  if (!sessionCols.some((c) => c.name === 'locked_until')) {
+    db.exec('ALTER TABLE exam_sessions ADD COLUMN locked_until TEXT;');
+  }
+  if (!sessionCols.some((c) => c.name === 'locked_by_event_type')) {
+    db.exec('ALTER TABLE exam_sessions ADD COLUMN locked_by_event_type TEXT;');
+  }
+
+  // Safe migration for violation_logs: device type/brand, duration, points, excuse reason
+  const vLogCols = db.prepare('PRAGMA table_info(violation_logs)').all() as Array<{ name: string }>;
+  if (!vLogCols.some((c) => c.name === 'device_type')) {
+    db.exec("ALTER TABLE violation_logs ADD COLUMN device_type TEXT NOT NULL DEFAULT 'web';");
+  }
+  if (!vLogCols.some((c) => c.name === 'device_brand')) {
+    db.exec("ALTER TABLE violation_logs ADD COLUMN device_brand TEXT NOT NULL DEFAULT '';");
+  }
+  if (!vLogCols.some((c) => c.name === 'duration_seconds')) {
+    db.exec('ALTER TABLE violation_logs ADD COLUMN duration_seconds INTEGER;');
+  }
+  if (!vLogCols.some((c) => c.name === 'points_added')) {
+    db.exec('ALTER TABLE violation_logs ADD COLUMN points_added INTEGER NOT NULL DEFAULT 1;');
+  }
+  if (!vLogCols.some((c) => c.name === 'is_excused')) {
+    db.exec('ALTER TABLE violation_logs ADD COLUMN is_excused INTEGER NOT NULL DEFAULT 0;');
+  }
+  if (!vLogCols.some((c) => c.name === 'excuse_reason')) {
+    db.exec("ALTER TABLE violation_logs ADD COLUMN excuse_reason TEXT NOT NULL DEFAULT '';");
   }
 
   // Idempotent synthetic backfill for seeded demo accounts created before new profile fields existed
